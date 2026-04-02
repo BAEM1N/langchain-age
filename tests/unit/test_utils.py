@@ -320,3 +320,58 @@ class TestPropsToCypher:
         result = self._convert({"age": 30, "score": 0.95})
         assert "30" in result
         assert "0.95" in result
+
+
+# ---------------------------------------------------------------------------
+# Lazy import (v0.5.0) — __init__.py __getattr__
+# ---------------------------------------------------------------------------
+
+class TestLazyImport:
+    """Verify that top-level __init__.py supports lazy attribute access."""
+
+    def test_import_age_vector(self):
+        import langchain_age
+        assert hasattr(langchain_age, "AGEVector")
+        from langchain_age import AGEVector
+        assert AGEVector is not None
+
+    def test_import_distance_strategy(self):
+        from langchain_age import DistanceStrategy
+        assert hasattr(DistanceStrategy, "COSINE")
+
+    def test_import_chat_history(self):
+        from langchain_age import PostgresChatMessageHistory
+        assert PostgresChatMessageHistory is not None
+
+    def test_invalid_attr_raises(self):
+        import langchain_age
+        with pytest.raises(AttributeError, match="no attribute"):
+            _ = langchain_age.NonExistentClass
+
+
+# ---------------------------------------------------------------------------
+# Relevance score functions (v0.5.0)
+# ---------------------------------------------------------------------------
+
+class TestRelevanceScoreFn:
+    def test_cosine_score(self):
+        from langchain_age.vectorstores.age_vector import AGEVector, DistanceStrategy
+
+        class _Emb:
+            def embed_documents(self, t): return [[0.0]*4 for _ in t]
+            def embed_query(self, t): return [0.0]*4
+
+        store = AGEVector.__new__(AGEVector)
+        store.distance_strategy = DistanceStrategy.COSINE
+        store._relevance_score_fn = None
+        fn = store._select_relevance_score_fn()
+        assert fn(0.0) == pytest.approx(1.0)
+        assert fn(1.0) == pytest.approx(0.0)
+
+    def test_euclidean_score(self):
+        from langchain_age.vectorstores.age_vector import AGEVector, DistanceStrategy
+        store = AGEVector.__new__(AGEVector)
+        store.distance_strategy = DistanceStrategy.EUCLIDEAN
+        fn = store._select_relevance_score_fn()
+        assert fn(0.0) == pytest.approx(1.0)
+        assert 0 < fn(5.0) < 1

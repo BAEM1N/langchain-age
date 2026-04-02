@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-age"
-version = "0.4.0"
+version = "0.5.0"
 description = "LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 keywords = ["langchain", "apache-age", "pgvector", "graph-database", "postgresql", "rag", "graphrag"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -23,28 +23,35 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# Core dependencies: only langchain-core + psycopg3 (shared by all modes).
+# Graph-specific and Vector-specific deps are in [project.optional-dependencies].
 dependencies = [
-    # LangChain v1 — mirrors the version requirement used by langchain-neo4j
     "langchain-core>=1.0.0,<2.0.0",
     "langchain-community>=0.4.0",
     "langchain>=1.0.0,<2.0.0",
-    # Apache AGE Python driver — MUST use the psycopg3-based version from GitHub.
-    # PyPI's 0.0.7 depends on psycopg2 which is incompatible with Python 3.12+.
-    "apache-age-python @ git+https://github.com/apache/age.git#subdirectory=drivers/python",
-    # psycopg3 – used by apache-age-python and AGEVector
+    # psycopg3 — used by all modes (graph, vector, chat history)
     "psycopg[binary]>=3.1.0",
-    # pgvector Python adapter (registers vector type for psycopg3)
-    "pgvector>=0.3.0",
-    # numpy – required for pgvector embedding type conversion
-    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
+# Graph-only: AGEGraph + AGEGraphCypherQAChain
+graph = [
+    "apache-age-python @ git+https://github.com/apache/age.git#subdirectory=drivers/python",
+]
+# Vector-only: AGEVector
+vector = [
+    "pgvector>=0.3.0",
+    "numpy>=1.24",
+]
+# Graph + Vector (everything)
+all = [
+    "langchain-age[graph,vector]",
+]
 dev = [
+    "langchain-age[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "langchain-openai>=0.2.0",
-    "numpy>=1.24",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
@@ -53,6 +60,9 @@ dev = [
 Homepage = "https://github.com/BAEM1N/langchain-age"
 Repository = "https://github.com/BAEM1N/langchain-age"
 Issues = "https://github.com/BAEM1N/langchain-age/issues"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_age"]
@@ -66,14 +76,14 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

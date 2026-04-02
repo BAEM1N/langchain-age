@@ -153,6 +153,46 @@ class AGEVector(VectorStore):
     # VectorStore interface
     # ------------------------------------------------------------------
 
+    @property
+    def embeddings(self) -> Embeddings:
+        """Access the embedding function (LangChain VectorStore convention)."""
+        return self.embedding_function
+
+    def _select_relevance_score_fn(self) -> Callable[[float], float]:
+        """Map distance strategy to a relevance score function.
+
+        Mirrors the ``_select_relevance_score_fn`` pattern used by
+        ``Neo4jVector`` and ``PGVectorStore``.
+        """
+        if self.distance_strategy == DistanceStrategy.COSINE:
+            return lambda d: 1.0 - d
+        if self.distance_strategy == DistanceStrategy.EUCLIDEAN:
+            return lambda d: 1.0 / (1.0 + d)
+        if self.distance_strategy == DistanceStrategy.MAX_INNER_PRODUCT:
+            return lambda d: -d
+        raise ValueError(f"Unknown distance strategy: {self.distance_strategy}")
+
+    def similarity_search_with_relevance_scores(
+        self,
+        query: str,
+        k: int = 4,
+        filter: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> List[Tuple[Document, float]]:
+        """Return documents with relevance scores normalised to [0, 1].
+
+        Unlike ``similarity_search_with_score`` which returns raw distances,
+        this method converts distances to relevance scores using the
+        appropriate function for the configured ``DistanceStrategy``.
+        """
+        score_fn = (
+            self._relevance_score_fn
+            if self._relevance_score_fn
+            else self._select_relevance_score_fn()
+        )
+        raw = self.similarity_search_with_score(query, k=k, filter=filter, **kwargs)
+        return [(doc, score_fn(dist)) for doc, dist in raw]
+
     def add_texts(
         self,
         texts: Iterable[str],

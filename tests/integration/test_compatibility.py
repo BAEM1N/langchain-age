@@ -400,3 +400,112 @@ class TestAGEGraphCypherQAChain:
         assert QA_PROMPT is not None
         chain = self._make_chain(graph)
         assert chain is not None
+
+
+# ─────────────────────────────────────────────────────────────────
+# 5. 추가 VectorStore 메서드 (v0.5.0)
+# ─────────────────────────────────────────────────────────────────
+
+class TestVectorStoreExtended:
+    """v0.5.0에서 추가된 VectorStore 메서드 검증"""
+
+    def test_embeddings_property(self, vector_store):
+        """embeddings property — LangChain VectorStore 표준"""
+        emb = vector_store.embeddings
+        assert emb is vector_store.embedding_function
+
+    def test_similarity_search_with_relevance_scores(self, vector_store):
+        """similarity_search_with_relevance_scores — 0~1 정규화"""
+        vector_store.add_texts(["dog walks", "cat naps"], metadatas=[{}, {}])
+        results = vector_store.similarity_search_with_relevance_scores("dog", k=2)
+        assert len(results) >= 1
+        for doc, score in results:
+            assert isinstance(score, float)
+
+    def test_context_manager(self):
+        """with AGEVector(...) as store: — context manager"""
+        from langchain_age import AGEVector, DistanceStrategy
+        with AGEVector(
+            connection_string=DSN,
+            embedding_function=FakeEmbeddings(),
+            collection_name="test_ctx_mgr",
+            pre_delete_collection=True,
+        ) as store:
+            store.add_texts(["context manager test"])
+            results = store.similarity_search("context", k=1)
+            assert len(results) >= 1
+        # after __exit__, connection is closed
+        assert store._conn.closed
+
+
+# ─────────────────────────────────────────────────────────────────
+# 6. ChatMessageHistory (v0.5.0)
+# ─────────────────────────────────────────────────────────────────
+
+class TestPostgresChatMessageHistory:
+    """PostgresChatMessageHistory 통합 테스트"""
+
+    def test_create_and_messages(self):
+        from langchain_age import PostgresChatMessageHistory
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        history = PostgresChatMessageHistory.create(
+            connection_string=DSN,
+            session_id="test-session-001",
+            table_name="test_chat_history",
+        )
+        try:
+            history.clear()
+            history.add_message(HumanMessage(content="Hello"))
+            history.add_message(AIMessage(content="Hi there!"))
+            msgs = history.messages
+            assert len(msgs) == 2
+            assert msgs[0].content == "Hello"
+            assert msgs[1].content == "Hi there!"
+
+            # clear
+            history.clear()
+            assert len(history.messages) == 0
+        finally:
+            history.close()
+
+    def test_add_messages_batch(self):
+        from langchain_age import PostgresChatMessageHistory
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        history = PostgresChatMessageHistory.create(
+            connection_string=DSN,
+            session_id="test-session-002",
+            table_name="test_chat_history",
+        )
+        try:
+            history.clear()
+            history.add_messages([
+                HumanMessage(content="Q1"),
+                AIMessage(content="A1"),
+                HumanMessage(content="Q2"),
+            ])
+            assert len(history.messages) == 3
+            history.clear()
+        finally:
+            history.close()
+
+    def test_session_isolation(self):
+        from langchain_age import PostgresChatMessageHistory
+        from langchain_core.messages import HumanMessage
+
+        h1 = PostgresChatMessageHistory.create(DSN, "iso-1", "test_chat_history")
+        h2 = PostgresChatMessageHistory.create(DSN, "iso-2", "test_chat_history")
+        try:
+            h1.clear()
+            h2.clear()
+            h1.add_message(HumanMessage(content="msg for session 1"))
+            h2.add_message(HumanMessage(content="msg for session 2"))
+            assert len(h1.messages) == 1
+            assert len(h2.messages) == 1
+            assert h1.messages[0].content != h2.messages[0].content
+            h1.clear()
+            h2.clear()
+        finally:
+            h1.close()
+            h2.close()

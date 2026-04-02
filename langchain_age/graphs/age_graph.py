@@ -309,7 +309,6 @@ class AGEGraph(GraphStore):
     def _ensure_extensions(self) -> None:
         with self._conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS age;")
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         self._conn.commit()
 
     def _ensure_graph(self) -> None:
