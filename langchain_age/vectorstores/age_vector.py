@@ -13,8 +13,7 @@ Design notes (compared with langchain-neo4j / langchain-postgres):
 - ``validate_sql_identifier`` guard at construction time rather than silent
   sanitisation — failing fast is safer than silently renaming a table.
 - ``executemany`` for batch INSERT (replaces N individual INSERT round-trips).
-- ``asyncio.get_event_loop()`` replaced by ``asyncio.get_running_loop()`` to
-  avoid the DeprecationWarning introduced in Python 3.10.
+- ``asyncio.get_running_loop()`` instead of the deprecated ``get_event_loop()``.
 
 Security improvements over v0.3.x:
 - ``collection_name`` is validated at ``__init__`` time.
@@ -580,7 +579,7 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """Async version of ``add_texts``."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, lambda: self.add_texts(list(texts), metadatas=metadatas, ids=ids)
         )
@@ -592,7 +591,7 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """Async version of ``add_documents``."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, lambda: self.add_documents(documents, ids=ids)
         )
@@ -605,7 +604,7 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[Document]:
         """Async similarity search."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, lambda: self.similarity_search(query, k=k, filter=filter)
         )
@@ -618,7 +617,7 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[Document]:
         """Async vector similarity search."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             lambda: self.similarity_search_by_vector(embedding, k=k, filter=filter),
@@ -626,7 +625,7 @@ class AGEVector(VectorStore):
 
     async def adelete(self, ids: List[str], **kwargs: Any) -> Optional[bool]:
         """Async delete."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self.delete(ids))
 
     # ------------------------------------------------------------------

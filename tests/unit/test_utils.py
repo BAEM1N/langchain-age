@@ -3,8 +3,12 @@ import pytest
 
 from langchain_age.utils.agtype import agobj_to_dict, agtype_to_python, python_to_agtype
 from langchain_age.utils.cypher import (
+    CYPHER_RESERVED_WORDS,
+    escape_cypher_identifier,
+    escape_cypher_string,
     extract_cypher_return_aliases,
     validate_cypher,
+    validate_sql_identifier,
     wrap_cypher_query,
 )
 
@@ -86,8 +90,9 @@ class TestPythonToAgtype:
         assert python_to_agtype("hello") == "'hello'"
 
     def test_string_with_single_quote(self):
+        # v0.4.0: uses '' doubling (OpenCypher standard), not \'
         result = python_to_agtype("it's")
-        assert "\\'" in result
+        assert "''" in result
 
     def test_dict(self):
         assert python_to_agtype({"a": 1}) == '{"a": 1}'
@@ -218,3 +223,100 @@ class TestFilterClause:
     def test_or_operator(self):
         clause, params = self._build({"$or": [{"a": "1"}, {"b": "2"}]})
         assert "OR" in clause
+
+    def test_unsupported_operator_raises(self):
+        with pytest.raises(ValueError, match="Unsupported filter operator"):
+            self._build({"x": {"$foo": 1}})
+
+    def test_max_depth_guard(self):
+        # Build a filter nested >10 levels deep
+        f = {"a": "1"}
+        for _ in range(15):
+            f = {"$and": [f]}
+        with pytest.raises(ValueError, match="maximum depth"):
+            self._build(f)
+
+
+# ---------------------------------------------------------------------------
+# escape_cypher_identifier (v0.4.0)
+# ---------------------------------------------------------------------------
+
+class TestEscapeCypherIdentifier:
+    def test_simple_name(self):
+        assert escape_cypher_identifier("name") == "`name`"
+
+    def test_reserved_word(self):
+        assert escape_cypher_identifier("desc") == "`desc`"
+
+    def test_embedded_backtick(self):
+        assert escape_cypher_identifier("my`prop") == "`my``prop`"
+
+    def test_all_reserved_words_in_frozenset(self):
+        for word in ["desc", "asc", "order", "where", "match", "return",
+                     "set", "limit", "skip", "and", "or", "not"]:
+            assert word in CYPHER_RESERVED_WORDS
+
+
+# ---------------------------------------------------------------------------
+# escape_cypher_string (v0.4.0)
+# ---------------------------------------------------------------------------
+
+class TestEscapeCypherString:
+    def test_no_special_chars(self):
+        assert escape_cypher_string("hello") == "hello"
+
+    def test_single_quote_doubled(self):
+        assert escape_cypher_string("it's") == "it''s"
+
+    def test_backslash_escaped(self):
+        assert escape_cypher_string("a\\b") == "a\\\\b"
+
+    def test_both(self):
+        assert escape_cypher_string("it's a\\path") == "it''s a\\\\path"
+
+
+# ---------------------------------------------------------------------------
+# validate_sql_identifier (v0.4.0)
+# ---------------------------------------------------------------------------
+
+class TestValidateSqlIdentifier:
+    def test_valid_names(self):
+        for name in ["my_table", "T1", "_private", "abc123"]:
+            assert validate_sql_identifier(name) == name
+
+    def test_invalid_names_raise(self):
+        for name in ["1bad", "my-table", "drop;--", "has space", "tab\tle", ""]:
+            with pytest.raises(ValueError, match="Unsafe"):
+                validate_sql_identifier(name)
+
+
+# ---------------------------------------------------------------------------
+# AGEGraph._props_to_cypher (v0.4.0)
+# ---------------------------------------------------------------------------
+
+class TestPropsToCypher:
+    def _convert(self, props):
+        from langchain_age.graphs.age_graph import AGEGraph
+        return AGEGraph._props_to_cypher(props)
+
+    def test_empty(self):
+        assert self._convert({}) == "{}"
+
+    def test_string_value_quote_doubled(self):
+        result = self._convert({"name": "it's"})
+        assert "'it''s'" in result
+
+    def test_key_backtick_quoted(self):
+        result = self._convert({"desc": "test"})
+        assert "`desc`" in result
+
+    def test_bool_and_none(self):
+        result = self._convert({"active": True, "deleted": False, "x": None})
+        assert "true" in result
+        assert "false" in result
+        assert "null" in result
+
+    def test_number(self):
+        result = self._convert({"age": 30, "score": 0.95})
+        assert "30" in result
+        assert "0.95" in result
