@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
 
 try:
+    import numpy as np
     import psycopg
     import psycopg.rows
     from pgvector.psycopg import register_vector
@@ -75,6 +76,7 @@ class AGEVector(VectorStore):
         relevance_score_fn: Optional[Callable[[float], float]] = None,
         age_graph_name: Optional[str] = None,
         retrieval_query: Optional[str] = None,
+        embedding_dimension: Optional[int] = None,
     ) -> None:
         self._conn_string = connection_string
         self.embedding_function = embedding_function
@@ -82,6 +84,7 @@ class AGEVector(VectorStore):
         self.distance_strategy = distance_strategy
         self.search_type = search_type
         self._relevance_score_fn = relevance_score_fn
+        self._embedding_dimension = embedding_dimension
         self.age_graph_name = age_graph_name
         self.retrieval_query = retrieval_query
 
@@ -110,20 +113,24 @@ class AGEVector(VectorStore):
         with self._conn.cursor() as cur:
             for doc_id, text, emb, meta in zip(ids, texts_list, embeddings, metadatas):
                 age_node_id = meta.pop("age_node_id", None)
-                cur.execute(
-                    f"""
-                    INSERT INTO {self.collection_name}
-                        (id, content, embedding, metadata, age_node_id, fts)
-                    VALUES (%s, %s, %s, %s, %s, to_tsvector('english', %s))
-                    ON CONFLICT (id) DO UPDATE
-                        SET content     = EXCLUDED.content,
-                            embedding   = EXCLUDED.embedding,
-                            metadata    = EXCLUDED.metadata,
-                            age_node_id = EXCLUDED.age_node_id,
-                            fts         = EXCLUDED.fts;
-                    """,
-                    (doc_id, text, emb, psycopg.types.json.Jsonb(meta), age_node_id, text),
-                )
+                try:
+                    # fts is a GENERATED ALWAYS column — omit from INSERT list
+                    cur.execute(
+                        f"""
+                        INSERT INTO {self.collection_name}
+                            (id, content, embedding, metadata, age_node_id)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                            SET content     = EXCLUDED.content,
+                                embedding   = EXCLUDED.embedding,
+                                metadata    = EXCLUDED.metadata,
+                                age_node_id = EXCLUDED.age_node_id;
+                        """,
+                        (doc_id, text, self._to_vec(emb), psycopg.types.json.Jsonb(meta), age_node_id),
+                    )
+                except Exception:
+                    self._conn.rollback()
+                    raise
         self._conn.commit()
         return ids
 
@@ -212,9 +219,13 @@ class AGEVector(VectorStore):
             ORDER BY distance
             LIMIT %s;
         """
-        with self._conn.cursor() as cur:
-            cur.execute(sql, [embedding] + where_params + [k])
-            rows = cur.fetchall()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql, [self._to_vec(embedding)] + where_params + [k])
+                rows = cur.fetchall()
+        except Exception:
+            self._conn.rollback()
+            raise
 
         return self._rows_to_docs(rows)
 
@@ -296,13 +307,17 @@ class AGEVector(VectorStore):
             LIMIT %s;
         """
         params = (
-            [embedding] + where_params + [fetch_k]   # vec subquery
+            [self._to_vec(embedding)] + where_params + [fetch_k]   # vec subquery
             + [query, query] + where_params + [fetch_k]  # fts subquery
             + [k]
         )
-        with self._conn.cursor() as cur:
-            cur.execute(rrf_sql, params)
-            rows = cur.fetchall()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(rrf_sql, params)
+                rows = cur.fetchall()
+        except Exception:
+            self._conn.rollback()
+            raise
         return self._rows_to_docs(rows)
 
     # ------------------------------------------------------------------
@@ -383,21 +398,27 @@ class AGEVector(VectorStore):
 
         graph = AGEGraph(connection_string, graph_name, refresh_schema=False)
 
+        # Use "prop_" prefix to avoid SQL reserved-word conflicts (e.g. "desc", "order")
+        # Avoid id(n) — AGE treats it as an internal agtype that can cause column-def issues;
+        # instead use a property we know exists (the node itself carries its id inside properties)
         prop_returns = ", ".join(
-            f"n.{p} AS {p}" for p in text_node_properties
+            f"n.{p} AS prop_{p}" for p in text_node_properties
         )
-        rows = graph.query(f"MATCH (n:{node_label}) RETURN id(n) AS node_id, {prop_returns}")
+        # Return the node itself to extract internal id from properties dict
+        rows = graph.query(
+            f"MATCH (n:{node_label}) RETURN n AS node_obj, {prop_returns}"
+        )
 
         docs: List[Document] = []
         for row in rows:
-            parts = [str(row[p]) for p in text_node_properties if row.get(p)]
+            parts = [str(row[f"prop_{p}"]) for p in text_node_properties if row.get(f"prop_{p}")]
             text = " ".join(parts).strip()
             if not text:
                 continue
-            meta = {
-                "age_node_id": str(row.get("node_id", "")),
-                "node_label": node_label,
-            }
+            # Extract the AGE internal node id from the Vertex object
+            node_obj = row.get("node_obj") or {}
+            node_id = str(node_obj.get("id", "")) if isinstance(node_obj, dict) else ""
+            meta = {"age_node_id": node_id, "node_label": node_label}
             docs.append(Document(page_content=text, metadata=meta))
 
         store = cls(
@@ -510,6 +531,21 @@ class AGEVector(VectorStore):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _to_vec(embedding: List[float]) -> "np.ndarray":
+        """Convert a Python list to numpy float32 array (required by pgvector adapter)."""
+        return np.array(embedding, dtype=np.float32)
+
+    def _detect_dimension(self) -> Optional[int]:
+        """Auto-detect embedding dimension by generating a test embedding."""
+        if self._embedding_dimension:
+            return self._embedding_dimension
+        try:
+            sample = self.embedding_function.embed_query("test")
+            return len(sample)
+        except Exception:
+            return None
+
     def _connect(self) -> psycopg.Connection:
         conn = psycopg.connect(self._conn_string)
         conn.autocommit = False
@@ -517,19 +553,21 @@ class AGEVector(VectorStore):
         return conn
 
     def _create_table_if_not_exists(self) -> None:
+        dim = self._detect_dimension()
+        # vector(N) enables HNSW/IVFFlat indexes; plain vector() works but prevents indexing
+        vec_type = f"vector({dim})" if dim else "vector"
         with self._conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.collection_name} (
                     id          TEXT PRIMARY KEY,
                     content     TEXT NOT NULL,
-                    embedding   vector,
+                    embedding   {vec_type},
                     metadata    JSONB DEFAULT '{{}}',
                     age_node_id TEXT,
                     fts         TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
                 );
             """)
-            # GIN index for full-text search
             cur.execute(f"""
                 CREATE INDEX IF NOT EXISTS {self.collection_name}_fts_idx
                 ON {self.collection_name} USING gin(fts);
@@ -537,6 +575,7 @@ class AGEVector(VectorStore):
         self._conn.commit()
 
     def _drop_table(self) -> None:
+        self._conn.rollback()  # clear any aborted transaction first
         with self._conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {self.collection_name};")
         self._conn.commit()

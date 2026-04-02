@@ -15,6 +15,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- Load AGE shared library and set search path so ag_catalog is always visible
 LOAD 'age';
 ALTER DATABASE langchain_age SET search_path = ag_catalog, "$user", public;
+ALTER DATABASE postgres    SET search_path = ag_catalog, "$user", public;
 
 -- Verify all three extensions are active
 DO $$

@@ -5,8 +5,9 @@ from typing import Any, Dict, List, Optional
 
 try:
     import age as age_sdk
-    from age import execCypher, setUpAge
+    from age import setUpAge
     import psycopg
+    from psycopg.client_cursor import ClientCursor
 except ImportError as e:
     raise ImportError(
         "apache-age-python and psycopg are required.\n"
@@ -118,7 +119,14 @@ class AGEGraph(GraphStore):
                     (int(self._timeout * 1000),),
                 )
             try:
-                age_sdk.cypher(cur, self.graph_name, query, cols=aliases)
+                # age_sdk.cypher() generates cypher(NULL,NULL) which PG18 rejects.
+                # Build the SQL directly with literal graph name + dollar-quoted query.
+                sql = wrap_cypher_query(
+                    self.graph_name,
+                    query,
+                    [(alias, "agtype") for alias in aliases],
+                )
+                cur.execute(sql)
                 if cur.description is None:
                     self._conn.commit()
                     return []
@@ -212,7 +220,8 @@ class AGEGraph(GraphStore):
     # ------------------------------------------------------------------
 
     def _connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self._conn_string)
+        # ClientCursor is required by the AGE SDK's cypher() helper (uses mogrify)
+        conn = psycopg.connect(self._conn_string, cursor_factory=ClientCursor)
         conn.autocommit = False
         setUpAge(conn, self.graph_name)
         return conn
@@ -297,8 +306,9 @@ class AGEGraph(GraphStore):
         return "Unknown"
 
     def _run_write(self, cypher: str) -> None:
+        sql = wrap_cypher_query(self.graph_name, cypher, [("v", "agtype")])
         with self._conn.cursor() as cur:
-            age_sdk.cypher(cur, self.graph_name, cypher, cols=["v"])
+            cur.execute(sql)
         self._conn.commit()
 
     @staticmethod

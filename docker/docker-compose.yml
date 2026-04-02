@@ -11,7 +11,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PGVECTOR_VERSION: "0.7.4"
+        PGVECTOR_VERSION: "master"
     image: langchain-age-db:latest
     container_name: langchain-age-db
     environment:
@@ -21,7 +21,8 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_age_data:/var/lib/postgresql/data
+      # PG18+ uses /var/lib/postgresql (not /data) for version-specific subdirs
+      - postgres_age_data:/var/lib/postgresql
     healthcheck:
       test:
         - CMD-SHELL
