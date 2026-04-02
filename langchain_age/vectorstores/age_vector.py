@@ -398,11 +398,11 @@ class AGEVector(VectorStore):
 
         graph = AGEGraph(connection_string, graph_name, refresh_schema=False)
 
-        # Use "prop_" prefix to avoid SQL reserved-word conflicts (e.g. "desc", "order")
-        # Avoid id(n) — AGE treats it as an internal agtype that can cause column-def issues;
-        # instead use a property we know exists (the node itself carries its id inside properties)
+        # Backtick-quote every property name so AGE Cypher reserved words (desc, asc, order,
+        # where, match, limit, skip, set, …) don't break the parser.
+        # "prop_" prefix on aliases avoids SQL reserved-word collisions in the column-def list.
         prop_returns = ", ".join(
-            f"n.{p} AS prop_{p}" for p in text_node_properties
+            f"n.`{p}` AS prop_{p}" for p in text_node_properties
         )
         # Return the node itself to extract internal id from properties dict
         rows = graph.query(

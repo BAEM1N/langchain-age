@@ -286,17 +286,16 @@ class TestFromExistingGraph:
     def test_from_existing_graph(self, graph):
         from langchain_age import AGEVector
         # 먼저 그래프 노드 확인 (TestAGEGraph에서 생성된 것 활용)
-        # Note: "desc" is a Cypher reserved keyword (ORDER BY ... DESC) and cannot
-        # be used as a property name in AGE Cypher queries. Use "description" instead.
-        graph.query("MERGE (:Product {name: 'LangChain', description: 'LLM framework'})")
-        graph.query("MERGE (:Product {name: 'pgvector', description: 'Vector search extension'})")
+        # "desc" is a Cypher reserved keyword — backtick quoting in from_existing_graph handles it.
+        graph.query("MERGE (:Product {name: 'LangChain', desc: 'LLM framework'})")
+        graph.query("MERGE (:Product {name: 'pgvector', desc: 'Vector search extension'})")
 
         store = AGEVector.from_existing_graph(
             embedding=FakeEmbeddings(),
             connection_string=DSN,
             graph_name=GRAPH,
             node_label="Product",
-            text_node_properties=["name", "description"],
+            text_node_properties=["name", "desc"],
             collection_name="test_from_graph_tmp",
         )
         results = store.similarity_search("LLM", k=2)
