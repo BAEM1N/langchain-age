@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-age"
-version = "0.5.0"
+version = "0.0.5"
 description = "LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL"
 readme = "README.md"
 license = { text = "MIT" }
