@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-age"
-version = "0.3.0"
+version = "0.4.0"
 description = "LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL"
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,6 +35,8 @@ dependencies = [
     "pgvector>=0.3.0",
     # numpy – required for pgvector embedding type conversion
     "numpy>=1.24",
+    # psycopg-pool – optional but recommended for production connection pooling
+    "psycopg-pool>=3.1.0",
 ]
 
 [project.optional-dependencies]

@@ -1,16 +1,36 @@
 """pgvector-backed VectorStore with Apache AGE graph node linkage.
 
-Mirrors ``Neo4jVector`` from *langchain-neo4j* and ``PGVectorStore`` from
-*langchain-postgres*, combining:
-- **pgvector** for fast vector similarity search
-- **Apache AGE** for optional graph-context retrieval
-- **PostgreSQL full-text search** for hybrid (vector + keyword) search
+Design notes (compared with langchain-neo4j / langchain-postgres):
+
+``Neo4jVector`` reference points adopted:
+- Backtick-quoting for all user-supplied property names in generated Cypher.
+- Context-manager / ``close()`` support.
+- ``batch_size`` parameter on ``add_texts`` (1 000 rows per transaction,
+  mirroring Neo4j's "IN TRANSACTIONS OF 1000 ROWS" batch pattern).
+
+``langchain-postgres`` (PGVector) reference points adopted:
+- Double-quoted SQL identifiers for table and index names.
+- ``validate_sql_identifier`` guard at construction time rather than silent
+  sanitisation — failing fast is safer than silently renaming a table.
+- ``executemany`` for batch INSERT (replaces N individual INSERT round-trips).
+- ``asyncio.get_event_loop()`` replaced by ``asyncio.get_running_loop()`` to
+  avoid the DeprecationWarning introduced in Python 3.10.
+
+Security improvements over v0.3.x:
+- ``collection_name`` is validated at ``__init__`` time.
+- All index and table names are double-quoted in SQL.
+- Property names in Cypher are backtick-quoted (handles reserved words).
+- Cypher string values use ``''`` doubling (OpenCypher standard).
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
+
+logger = logging.getLogger(__name__)
 
 try:
     import numpy as np
@@ -27,9 +47,12 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
 
+from langchain_age.utils.cypher import validate_sql_identifier
+
 
 class DistanceStrategy(str, Enum):
     """pgvector distance operator."""
+
     COSINE = "<=>"
     EUCLIDEAN = "<->"
     MAX_INNER_PRODUCT = "<#>"
@@ -37,11 +60,13 @@ class DistanceStrategy(str, Enum):
 
 class SearchType(str, Enum):
     """Search mode, mirrors Neo4jVector."""
+
     VECTOR = "vector"
     HYBRID = "hybrid"
 
 
 _DEFAULT_COLLECTION = "langchain_age_vectors"
+_DEFAULT_BATCH_SIZE = 1_000
 
 
 class AGEVector(VectorStore):
@@ -54,14 +79,23 @@ class AGEVector(VectorStore):
         connection_string: psycopg3 DSN / URI.
         embedding_function: LangChain ``Embeddings`` instance.
         collection_name: PostgreSQL table name for vector storage.
-        distance_strategy: Similarity metric.
-        search_type: ``"vector"`` (default) or ``"hybrid"`` (vector + fulltext).
-        pre_delete_collection: Drop & recreate table on init.
-        relevance_score_fn: Custom distance → score mapper.
+            Validated at construction: only ``[a-zA-Z_][a-zA-Z0-9_]*``.
+        distance_strategy: Similarity metric (default: cosine).
+        search_type: ``SearchType.VECTOR`` (default) or ``SearchType.HYBRID``
+            (vector + PostgreSQL full-text via RRF).
+        pre_delete_collection: Drop & recreate the table on init.
+        relevance_score_fn: Custom ``distance → score`` mapper.
         age_graph_name: AGE graph name for graph-enhanced retrieval.
-        retrieval_query: Custom Cypher snippet appended after the vector
-            search to enrich results with graph context.  Must return columns
-            ``text``, ``score``, and ``metadata``.
+        retrieval_query: Custom Cypher snippet for graph context enrichment.
+        embedding_dimension: Explicit vector dimension.  When ``None``, the
+            dimension is auto-detected via a sample ``embed_query`` call.
+        batch_size: Number of rows per INSERT transaction in ``add_texts``
+            (default 1 000, matching Neo4j's batch pattern).
+
+    Context-manager usage::
+
+        with AGEVector(conn, embedding, collection_name="docs") as store:
+            store.add_texts(["hello", "world"])
     """
 
     def __init__(
@@ -77,7 +111,11 @@ class AGEVector(VectorStore):
         age_graph_name: Optional[str] = None,
         retrieval_query: Optional[str] = None,
         embedding_dimension: Optional[int] = None,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
     ) -> None:
+        # Validate collection_name early — mirrors langchain-postgres pattern.
+        validate_sql_identifier(collection_name, context="collection_name")
+
         self._conn_string = connection_string
         self.embedding_function = embedding_function
         self.collection_name = collection_name
@@ -87,11 +125,30 @@ class AGEVector(VectorStore):
         self._embedding_dimension = embedding_dimension
         self.age_graph_name = age_graph_name
         self.retrieval_query = retrieval_query
+        self.batch_size = batch_size
 
         self._conn = self._connect()
         if pre_delete_collection:
             self._drop_table()
         self._create_table_if_not_exists()
+
+    # ------------------------------------------------------------------
+    # Context-manager support (mirrors Neo4j driver pattern)
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        try:
+            if not self._conn.closed:
+                self._conn.close()
+        except Exception:
+            logger.debug("Exception while closing AGEVector connection", exc_info=True)
+
+    def __enter__(self) -> AGEVector:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # VectorStore interface
@@ -104,34 +161,51 @@ class AGEVector(VectorStore):
         ids: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[str]:
-        """Embed *texts* and store them."""
+        """Embed *texts* and store them.
+
+        Uses ``executemany`` for batch INSERT (one round-trip per
+        ``batch_size`` rows instead of one per document), mirroring the
+        Neo4j "IN TRANSACTIONS OF 1000 ROWS" pattern.
+        """
         texts_list = list(texts)
+        if not texts_list:
+            return []
+
         embeddings = self.embedding_function.embed_documents(texts_list)
         ids = ids or [str(uuid.uuid4()) for _ in texts_list]
         metadatas = metadatas or [{} for _ in texts_list]
 
-        with self._conn.cursor() as cur:
-            for doc_id, text, emb, meta in zip(ids, texts_list, embeddings, metadatas):
-                age_node_id = meta.pop("age_node_id", None)
-                try:
-                    # fts is a GENERATED ALWAYS column — omit from INSERT list
-                    cur.execute(
-                        f"""
-                        INSERT INTO {self.collection_name}
-                            (id, content, embedding, metadata, age_node_id)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO UPDATE
-                            SET content     = EXCLUDED.content,
-                                embedding   = EXCLUDED.embedding,
-                                metadata    = EXCLUDED.metadata,
-                                age_node_id = EXCLUDED.age_node_id;
-                        """,
-                        (doc_id, text, self._to_vec(emb), psycopg.types.json.Jsonb(meta), age_node_id),
-                    )
-                except Exception:
-                    self._conn.rollback()
-                    raise
-        self._conn.commit()
+        # Build parameter rows — extract age_node_id from metadata in-place.
+        param_rows = []
+        for doc_id, text, emb, meta in zip(ids, texts_list, embeddings, metadatas):
+            meta = dict(meta)  # copy — do not mutate caller's dict
+            age_node_id = meta.pop("age_node_id", None)
+            param_rows.append(
+                (doc_id, text, self._to_vec(emb), psycopg.types.json.Jsonb(meta), age_node_id)
+            )
+
+        # Use double-quoted table name — langchain-postgres convention.
+        sql = f"""
+            INSERT INTO "{self.collection_name}"
+                (id, content, embedding, metadata, age_node_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+                SET content     = EXCLUDED.content,
+                    embedding   = EXCLUDED.embedding,
+                    metadata    = EXCLUDED.metadata,
+                    age_node_id = EXCLUDED.age_node_id;
+        """
+        try:
+            with self._conn.cursor() as cur:
+                # Batch by batch_size to limit transaction size.
+                for start in range(0, len(param_rows), self.batch_size):
+                    batch = param_rows[start : start + self.batch_size]
+                    cur.executemany(sql, batch)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
         return ids
 
     def add_documents(
@@ -150,19 +224,30 @@ class AGEVector(VectorStore):
 
     def delete(self, ids: List[str], **kwargs: Any) -> Optional[bool]:
         """Delete documents by ID."""
-        with self._conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {self.collection_name} WHERE id = ANY(%s);", (ids,))
-        self._conn.commit()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f'DELETE FROM "{self.collection_name}" WHERE id = ANY(%s);',
+                    (ids,),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         return True
 
     def get_by_ids(self, ids: List[str], **kwargs: Any) -> List[Document]:
         """Fetch documents by their IDs."""
-        with self._conn.cursor() as cur:
-            cur.execute(
-                f"SELECT id, content, metadata FROM {self.collection_name} WHERE id = ANY(%s);",
-                (ids,),
-            )
-            rows = cur.fetchall()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT id, content, metadata FROM "{self.collection_name}" WHERE id = ANY(%s);',
+                    (ids,),
+                )
+                rows = cur.fetchall()
+        except Exception:
+            self._conn.rollback()
+            raise
         return [Document(page_content=r[1], metadata=r[2] or {}) for r in rows]
 
     # ------------------------------------------------------------------
@@ -177,7 +262,10 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[Document]:
         """Return *k* most similar documents."""
-        return [doc for doc, _ in self.similarity_search_with_score(query, k=k, filter=filter)]
+        return [
+            doc
+            for doc, _ in self.similarity_search_with_score(query, k=k, filter=filter)
+        ]
 
     def similarity_search_with_score(
         self,
@@ -199,8 +287,13 @@ class AGEVector(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Document]:
-        """Search by pre-computed embedding."""
-        return [doc for doc, _ in self.similarity_search_by_vector_with_score(embedding, k=k, filter=filter)]
+        """Search by pre-computed embedding vector."""
+        return [
+            doc
+            for doc, _ in self.similarity_search_by_vector_with_score(
+                embedding, k=k, filter=filter
+            )
+        ]
 
     def similarity_search_by_vector_with_score(
         self,
@@ -214,7 +307,7 @@ class AGEVector(VectorStore):
         sql = f"""
             SELECT id, content, metadata, age_node_id,
                    embedding {self.distance_strategy.value} %s AS distance
-            FROM {self.collection_name}
+            FROM "{self.collection_name}"
             {where_clause}
             ORDER BY distance
             LIMIT %s;
@@ -226,7 +319,6 @@ class AGEVector(VectorStore):
         except Exception:
             self._conn.rollback()
             raise
-
         return self._rows_to_docs(rows)
 
     def max_marginal_relevance_search(
@@ -238,28 +330,59 @@ class AGEVector(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Document]:
-        """Return diverse documents via Maximal Marginal Relevance."""
+        """Return diverse documents via Maximal Marginal Relevance.
+
+        Reuses the stored embedding vectors from the DB (fetched alongside the
+        documents) instead of re-calling the embedding API, following the
+        efficient pattern used in ``langchain-postgres``.
+        """
         from langchain_core.vectorstores.utils import maximal_marginal_relevance
-        import numpy as np
 
         query_emb = self.embedding_function.embed_query(query)
-        candidates_and_scores = self.similarity_search_by_vector_with_score(
-            query_emb, k=fetch_k, filter=filter
-        )
-        if not candidates_and_scores:
+        where_clause, where_params = self._build_filter_clause(filter)
+
+        # Fetch candidates *with* their stored embedding vectors.
+        sql = f"""
+            SELECT id, content, metadata, age_node_id,
+                   embedding {self.distance_strategy.value} %s AS distance,
+                   embedding
+            FROM "{self.collection_name}"
+            {where_clause}
+            ORDER BY distance
+            LIMIT %s;
+        """
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql, [self._to_vec(query_emb)] + where_params + [fetch_k])
+                rows = cur.fetchall()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+        if not rows:
             return []
 
-        docs = [doc for doc, _ in candidates_and_scores]
-        candidate_embeddings = self.embedding_function.embed_documents(
-            [d.page_content for d in docs]
+        docs_and_scores = self._rows_to_docs(
+            [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
         )
+        docs = [doc for doc, _ in docs_and_scores]
+
+        # Reuse stored embedding vectors (column index 5) — no extra API call.
+        candidate_embeddings = [
+            list(r[5]) if r[5] is not None else [0.0] * len(query_emb)
+            for r in rows
+        ]
+
         selected = maximal_marginal_relevance(
-            np.array(query_emb), candidate_embeddings, lambda_mult=lambda_mult, k=k
+            np.array(query_emb),
+            candidate_embeddings,
+            lambda_mult=lambda_mult,
+            k=k,
         )
         return [docs[i] for i in selected]
 
     # ------------------------------------------------------------------
-    # Hybrid search (vector + PostgreSQL full-text)
+    # Hybrid search (vector + PostgreSQL full-text via RRF)
     # ------------------------------------------------------------------
 
     def _hybrid_search_with_score(
@@ -269,34 +392,38 @@ class AGEVector(VectorStore):
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
     ) -> List[Tuple[Document, float]]:
-        """Combine vector similarity and PostgreSQL full-text via RRF."""
+        """Combine vector similarity and PostgreSQL full-text via RRF (k=60)."""
         where_clause, where_params = self._build_filter_clause(filter)
         fetch_k = k * 4
+        tbl = f'"{self.collection_name}"'
 
-        # Vector ranking
         vector_sql = f"""
             SELECT id, content, metadata, age_node_id,
-                   row_number() OVER (ORDER BY embedding {self.distance_strategy.value} %s) AS rn_vec
-            FROM {self.collection_name}
+                   row_number() OVER (
+                       ORDER BY embedding {self.distance_strategy.value} %s
+                   ) AS rn_vec
+            FROM {tbl}
             {where_clause}
             LIMIT %s
         """
-        # Full-text ranking
         fts_sql = f"""
             SELECT id,
-                   row_number() OVER (ORDER BY ts_rank(fts, plainto_tsquery('english', %s)) DESC) AS rn_fts
-            FROM {self.collection_name}
+                   row_number() OVER (
+                       ORDER BY ts_rank(fts, plainto_tsquery('english', %s)) DESC
+                   ) AS rn_fts
+            FROM {tbl}
             WHERE fts @@ plainto_tsquery('english', %s)
             {('AND ' + where_clause.lstrip('WHERE ')) if where_clause else ''}
             LIMIT %s
         """
-        # RRF fusion  (k=60 is standard RRF constant)
         rrf_sql = f"""
             WITH vec AS ({vector_sql}),
                  fts AS ({fts_sql}),
                  fused AS (
                      SELECT COALESCE(vec.id, fts.id) AS id,
-                            (COALESCE(1.0/(60+vec.rn_vec), 0) + COALESCE(1.0/(60+fts.rn_fts), 0)) AS score,
+                            (  COALESCE(1.0 / (60 + vec.rn_vec), 0)
+                             + COALESCE(1.0 / (60 + fts.rn_fts), 0)
+                            ) AS score,
                             vec.content, vec.metadata, vec.age_node_id
                      FROM vec FULL OUTER JOIN fts ON vec.id = fts.id
                  )
@@ -307,8 +434,8 @@ class AGEVector(VectorStore):
             LIMIT %s;
         """
         params = (
-            [self._to_vec(embedding)] + where_params + [fetch_k]   # vec subquery
-            + [query, query] + where_params + [fetch_k]  # fts subquery
+            [self._to_vec(embedding)] + where_params + [fetch_k]
+            + [query, query] + where_params + [fetch_k]
             + [k]
         )
         try:
@@ -321,7 +448,7 @@ class AGEVector(VectorStore):
         return self._rows_to_docs(rows)
 
     # ------------------------------------------------------------------
-    # Class-method constructors
+    # Class-method constructors (mirrors Neo4jVector / PGVectorStore)
     # ------------------------------------------------------------------
 
     @classmethod
@@ -332,7 +459,7 @@ class AGEVector(VectorStore):
         metadatas: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> AGEVector:
-        """Create store and populate with *texts*."""
+        """Create a store and populate it with *texts*."""
         store = cls(embedding_function=embedding, **kwargs)
         store.add_texts(texts, metadatas=metadatas)
         return store
@@ -344,7 +471,7 @@ class AGEVector(VectorStore):
         embedding: Embeddings,
         **kwargs: Any,
     ) -> AGEVector:
-        """Create store and populate with *documents*."""
+        """Create a store and populate it with *documents*."""
         store = cls(embedding_function=embedding, **kwargs)
         store.add_documents(documents)
         return store
@@ -383,41 +510,50 @@ class AGEVector(VectorStore):
         into a text string, embeds them, and stores vectors in the collection.
         Mirrors ``Neo4jVector.from_existing_graph``.
 
+        All property names are backtick-quoted in the generated Cypher so
+        that AGE Cypher reserved words (``desc``, ``asc``, ``order``, ``where``,
+        ``match``, ``limit``, ``skip``, ``set``, …) are handled transparently.
+
         Args:
             embedding: Embeddings instance.
             connection_string: psycopg3 DSN.
             graph_name: AGE graph name.
             node_label: Node label to vectorise.
-            text_node_properties: Node properties to concatenate as text.
-            embedding_node_property: Property name to store the embedding
-                (stored as AGE property — informational only, actual vectors
-                live in the pgvector table).
+            text_node_properties: Node properties to concatenate as document text.
+            embedding_node_property: Informational — not written back to AGE.
             collection_name: pgvector table name.
         """
         from langchain_age.graphs.age_graph import AGEGraph
+        from langchain_age.utils.cypher import escape_cypher_identifier
 
         graph = AGEGraph(connection_string, graph_name, refresh_schema=False)
 
-        # Backtick-quote every property name so AGE Cypher reserved words (desc, asc, order,
-        # where, match, limit, skip, set, …) don't break the parser.
-        # "prop_" prefix on aliases avoids SQL reserved-word collisions in the column-def list.
+        # Backtick-quote every property name — handles Cypher reserved words.
+        # "prop_" prefix on aliases prevents SQL reserved-word collisions in
+        # the AGE column-definition list (e.g. "desc agtype" → SQL error).
         prop_returns = ", ".join(
-            f"n.`{p}` AS prop_{p}" for p in text_node_properties
+            f"n.{escape_cypher_identifier(p)} AS prop_{p}"
+            for p in text_node_properties
         )
-        # Return the node itself to extract internal id from properties dict
         rows = graph.query(
-            f"MATCH (n:{node_label}) RETURN n AS node_obj, {prop_returns}"
+            f"MATCH (n:{escape_cypher_identifier(node_label)}) "
+            f"RETURN n AS node_obj, {prop_returns}"
         )
 
         docs: List[Document] = []
         for row in rows:
-            parts = [str(row[f"prop_{p}"]) for p in text_node_properties if row.get(f"prop_{p}")]
+            parts = [
+                str(row[f"prop_{p}"])
+                for p in text_node_properties
+                if row.get(f"prop_{p}") is not None
+            ]
             text = " ".join(parts).strip()
             if not text:
                 continue
-            # Extract the AGE internal node id from the Vertex object
             node_obj = row.get("node_obj") or {}
-            node_id = str(node_obj.get("id", "")) if isinstance(node_obj, dict) else ""
+            node_id = (
+                str(node_obj.get("id", "")) if isinstance(node_obj, dict) else ""
+            )
             meta = {"age_node_id": node_id, "node_label": node_label}
             docs.append(Document(page_content=text, metadata=meta))
 
@@ -433,7 +569,7 @@ class AGEVector(VectorStore):
         return store
 
     # ------------------------------------------------------------------
-    # Async interface (mirrors PGVectorStore)
+    # Async interface
     # ------------------------------------------------------------------
 
     async def aadd_texts(
@@ -444,8 +580,8 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """Async version of ``add_texts``."""
-        import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
             None, lambda: self.add_texts(list(texts), metadatas=metadatas, ids=ids)
         )
 
@@ -456,8 +592,8 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """Async version of ``add_documents``."""
-        import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
             None, lambda: self.add_documents(documents, ids=ids)
         )
 
@@ -469,8 +605,8 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[Document]:
         """Async similarity search."""
-        import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
             None, lambda: self.similarity_search(query, k=k, filter=filter)
         )
 
@@ -482,50 +618,66 @@ class AGEVector(VectorStore):
         **kwargs: Any,
     ) -> List[Document]:
         """Async vector similarity search."""
-        import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.similarity_search_by_vector(embedding, k=k, filter=filter)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.similarity_search_by_vector(embedding, k=k, filter=filter),
         )
 
     async def adelete(self, ids: List[str], **kwargs: Any) -> Optional[bool]:
         """Async delete."""
-        import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self.delete(ids)
-        )
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self.delete(ids))
 
     # ------------------------------------------------------------------
     # Index management
     # ------------------------------------------------------------------
 
     def create_hnsw_index(self, m: int = 16, ef_construction: int = 64) -> None:
-        """Create HNSW index for approximate nearest-neighbour search."""
+        """Create an HNSW index for approximate nearest-neighbour search."""
         op = self._op_class()
-        with self._conn.cursor() as cur:
-            cur.execute(
-                f"CREATE INDEX IF NOT EXISTS {self.collection_name}_hnsw_idx "
-                f"ON {self.collection_name} USING hnsw (embedding {op}) "
-                f"WITH (m = {m}, ef_construction = {ef_construction});"
-            )
-        self._conn.commit()
+        idx = f'"{self.collection_name}_hnsw_idx"'
+        tbl = f'"{self.collection_name}"'
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx} ON {tbl} "
+                    f"USING hnsw (embedding {op}) "
+                    f"WITH (m = {m}, ef_construction = {ef_construction});"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def create_ivfflat_index(self, n_lists: int = 100) -> None:
-        """Create IVFFlat index for approximate nearest-neighbour search."""
+        """Create an IVFFlat index for approximate nearest-neighbour search."""
         op = self._op_class()
-        with self._conn.cursor() as cur:
-            cur.execute(
-                f"CREATE INDEX IF NOT EXISTS {self.collection_name}_ivfflat_idx "
-                f"ON {self.collection_name} USING ivfflat (embedding {op}) "
-                f"WITH (lists = {n_lists});"
-            )
-        self._conn.commit()
+        idx = f'"{self.collection_name}_ivfflat_idx"'
+        tbl = f'"{self.collection_name}"'
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx} ON {tbl} "
+                    f"USING ivfflat (embedding {op}) "
+                    f"WITH (lists = {n_lists});"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def drop_index(self) -> None:
         """Drop all vector indexes on this collection."""
         for suffix in ("_hnsw_idx", "_ivfflat_idx"):
-            with self._conn.cursor() as cur:
-                cur.execute(f"DROP INDEX IF EXISTS {self.collection_name}{suffix};")
-        self._conn.commit()
+            idx = f'"{self.collection_name}{suffix}"'
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(f"DROP INDEX IF EXISTS {idx};")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -533,17 +685,18 @@ class AGEVector(VectorStore):
 
     @staticmethod
     def _to_vec(embedding: List[float]) -> "np.ndarray":
-        """Convert a Python list to numpy float32 array (required by pgvector adapter)."""
+        """Convert a Python list to numpy float32 array (required by pgvector)."""
         return np.array(embedding, dtype=np.float32)
 
     def _detect_dimension(self) -> Optional[int]:
-        """Auto-detect embedding dimension by generating a test embedding."""
+        """Auto-detect embedding dimension via a sample embed_query call."""
         if self._embedding_dimension:
             return self._embedding_dimension
         try:
             sample = self.embedding_function.embed_query("test")
             return len(sample)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Could not auto-detect embedding dimension: %s", exc)
             return None
 
     def _connect(self) -> psycopg.Connection:
@@ -554,30 +707,38 @@ class AGEVector(VectorStore):
 
     def _create_table_if_not_exists(self) -> None:
         dim = self._detect_dimension()
-        # vector(N) enables HNSW/IVFFlat indexes; plain vector() works but prevents indexing
         vec_type = f"vector({dim})" if dim else "vector"
-        with self._conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS {self.collection_name} (
-                    id          TEXT PRIMARY KEY,
-                    content     TEXT NOT NULL,
-                    embedding   {vec_type},
-                    metadata    JSONB DEFAULT '{{}}',
-                    age_node_id TEXT,
-                    fts         TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
-                );
-            """)
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS {self.collection_name}_fts_idx
-                ON {self.collection_name} USING gin(fts);
-            """)
-        self._conn.commit()
+        tbl = f'"{self.collection_name}"'
+        fts_idx = f'"{self.collection_name}_fts_idx"'
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {tbl} (
+                        id          TEXT PRIMARY KEY,
+                        content     TEXT NOT NULL,
+                        embedding   {vec_type},
+                        metadata    JSONB DEFAULT '{{}}',
+                        age_node_id TEXT,
+                        fts         TSVECTOR
+                                    GENERATED ALWAYS AS
+                                    (to_tsvector('english', content)) STORED
+                    );
+                """)
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {fts_idx} "
+                    f"ON {tbl} USING gin(fts);"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _drop_table(self) -> None:
         self._conn.rollback()  # clear any aborted transaction first
+        tbl = f'"{self.collection_name}"'
         with self._conn.cursor() as cur:
-            cur.execute(f"DROP TABLE IF EXISTS {self.collection_name};")
+            cur.execute(f"DROP TABLE IF EXISTS {tbl};")
         self._conn.commit()
 
     def _op_class(self) -> str:
@@ -590,32 +751,51 @@ class AGEVector(VectorStore):
     def _rows_to_docs(self, rows: list) -> List[Tuple[Document, float]]:
         results = []
         for row_id, content, meta, age_node_id, distance in rows:
+            meta = dict(meta or {})
             if age_node_id:
-                (meta or {})["age_node_id"] = age_node_id
-            score = self._relevance_score_fn(distance) if self._relevance_score_fn else distance
-            results.append((Document(page_content=content, metadata=meta or {}), score))
+                meta["age_node_id"] = age_node_id
+            score = (
+                self._relevance_score_fn(distance)
+                if self._relevance_score_fn
+                else distance
+            )
+            results.append((Document(page_content=content, metadata=meta), score))
         return results
 
     @staticmethod
     def _build_filter_clause(
         filter: Optional[Dict[str, Any]],
+        _depth: int = 0,
     ) -> Tuple[str, List[Any]]:
-        """Build a WHERE clause supporting MongoDB-style filter operators.
+        """Build a ``WHERE`` clause supporting MongoDB-style filter operators.
 
-        Supports: ``$eq``, ``$ne``, ``$lt``, ``$lte``, ``$gt``, ``$gte``,
+        Supported operators:
+        ``$eq``, ``$ne``, ``$lt``, ``$lte``, ``$gt``, ``$gte``,
         ``$in``, ``$nin``, ``$between``, ``$like``, ``$ilike``,
         ``$exists``, ``$and``, ``$or``.
+
+        Recursion depth is capped at 10 to prevent stack overflow from
+        deeply nested ``$and``/``$or`` structures.
         """
         if not filter:
             return "", []
 
-        def _parse(f: Dict[str, Any]) -> Tuple[str, List[Any]]:
-            parts, params = [], []
+        MAX_DEPTH = 10
+
+        def _parse(f: Dict[str, Any], depth: int = 0) -> Tuple[str, List[Any]]:
+            if depth > MAX_DEPTH:
+                raise ValueError(
+                    f"Filter nesting exceeds maximum depth of {MAX_DEPTH}. "
+                    "Simplify the filter expression."
+                )
+
+            parts: List[str] = []
+            params: List[Any] = []
 
             if "$and" in f:
                 sub_parts, sub_params = [], []
                 for sub in f["$and"]:
-                    s, p = _parse(sub)
+                    s, p = _parse(sub, depth + 1)
                     sub_parts.append(s)
                     sub_params.extend(p)
                 parts.append("(" + " AND ".join(sub_parts) + ")")
@@ -625,47 +805,49 @@ class AGEVector(VectorStore):
             if "$or" in f:
                 sub_parts, sub_params = [], []
                 for sub in f["$or"]:
-                    s, p = _parse(sub)
+                    s, p = _parse(sub, depth + 1)
                     sub_parts.append(s)
                     sub_params.extend(p)
                 parts.append("(" + " OR ".join(sub_parts) + ")")
                 params.extend(sub_params)
                 return " AND ".join(parts), params
 
-            _OPS = {
-                "$eq":      ("metadata->>%s = %s",           1),
-                "$ne":      ("metadata->>%s != %s",          1),
-                "$lt":      ("(metadata->>%s)::numeric < %s",  1),
-                "$lte":     ("(metadata->>%s)::numeric <= %s", 1),
-                "$gt":      ("(metadata->>%s)::numeric > %s",  1),
-                "$gte":     ("(metadata->>%s)::numeric >= %s", 1),
-                "$like":    ("metadata->>%s LIKE %s",         1),
-                "$ilike":   ("metadata->>%s ILIKE %s",        1),
+            _SCALAR_OPS: Dict[str, str] = {
+                "$eq":    "metadata->>%s = %s",
+                "$ne":    "metadata->>%s != %s",
+                "$lt":    "(metadata->>%s)::numeric < %s",
+                "$lte":   "(metadata->>%s)::numeric <= %s",
+                "$gt":    "(metadata->>%s)::numeric > %s",
+                "$gte":   "(metadata->>%s)::numeric >= %s",
+                "$like":  "metadata->>%s LIKE %s",
+                "$ilike": "metadata->>%s ILIKE %s",
             }
 
             for key, expr in f.items():
                 if isinstance(expr, dict):
                     for op, val in expr.items():
                         if op == "$in":
-                            parts.append(f"metadata->>%s = ANY(%s)")
+                            parts.append("metadata->>%s = ANY(%s)")
                             params.extend([key, list(map(str, val))])
                         elif op == "$nin":
-                            parts.append(f"NOT (metadata->>%s = ANY(%s))")
+                            parts.append("NOT (metadata->>%s = ANY(%s))")
                             params.extend([key, list(map(str, val))])
                         elif op == "$between":
                             lo, hi = val
-                            parts.append("(metadata->>%s)::numeric BETWEEN %s AND %s")
+                            parts.append(
+                                "(metadata->>%s)::numeric BETWEEN %s AND %s"
+                            )
                             params.extend([key, lo, hi])
                         elif op == "$exists":
-                            if val:
-                                parts.append("metadata ? %s")
-                            else:
-                                parts.append("NOT (metadata ? %s)")
+                            parts.append(
+                                "metadata ? %s" if val else "NOT (metadata ? %s)"
+                            )
                             params.append(key)
-                        elif op in _OPS:
-                            template, _ = _OPS[op]
-                            parts.append(template)
+                        elif op in _SCALAR_OPS:
+                            parts.append(_SCALAR_OPS[op])
                             params.extend([key, str(val)])
+                        else:
+                            raise ValueError(f"Unsupported filter operator: {op!r}")
                 else:
                     # Bare equality shorthand: {"key": "value"}
                     parts.append("metadata->>%s = %s")

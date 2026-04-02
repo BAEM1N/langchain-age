@@ -10,26 +10,42 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Dict, List, Union
 
 try:
     from age import Edge, Path, Vertex
+
     _AGE_SDK_AVAILABLE = True
 except ImportError:
     _AGE_SDK_AVAILABLE = False
     Vertex = Edge = Path = None  # type: ignore[assignment,misc]
 
+# Type alias for the return values of agobj_to_dict / agtype_to_python.
+AGEPythonValue = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
 
-def agobj_to_dict(obj: Any) -> Any:
+
+def agobj_to_dict(obj: Any) -> AGEPythonValue:
     """Convert an apache-age-python SDK object to a plain Python value.
 
-    Handles:
-    - ``Vertex``  → ``{"id": ..., "label": ..., "properties": {...}}``
-    - ``Edge``    → ``{"id": ..., "label": ..., "start_id": ..., "end_id": ..., "properties": {...}}``
-    - ``Path``    → list of converted entities
-    - ``list``    → recursively converted list
-    - ``dict``    → recursively converted dict
-    - scalars     → returned as-is
+    Conversion table:
+
+    =========  =====================================================
+    SDK type   Python output
+    =========  =====================================================
+    Vertex     ``{"id": int, "label": str, "properties": dict}``
+    Edge       ``{"id": int, "label": str, "start_id": int,``
+               ``"end_id": int, "properties": dict}``
+    Path       ``list`` of converted entities
+    list       recursively converted list
+    dict       recursively converted dict
+    scalar     returned as-is
+    =========  =====================================================
+
+    Args:
+        obj: Value returned by psycopg3 / the AGE type loader.
+
+    Returns:
+        Plain Python value safe to serialise or pass to LangChain.
     """
     if _AGE_SDK_AVAILABLE:
         if isinstance(obj, Vertex):
@@ -56,12 +72,18 @@ def agobj_to_dict(obj: Any) -> Any:
     return obj
 
 
-def agtype_to_python(value: Any) -> Any:
+def agtype_to_python(value: Any) -> AGEPythonValue:
     """Best-effort conversion for raw agtype strings (fallback path).
 
-    When the SDK is active, psycopg3 handles conversion before this is
-    called.  This function is kept as a fallback for edge cases where
-    a raw agtype string slips through (e.g. in metadata columns).
+    When the SDK is active, psycopg3 handles conversion before this is called.
+    This function is kept as a fallback for edge cases where a raw agtype
+    string slips through (e.g. in metadata columns).
+
+    Args:
+        value: Raw value, possibly an agtype-encoded string.
+
+    Returns:
+        Converted Python value.
     """
     if value is None:
         return None
@@ -72,17 +94,32 @@ def agtype_to_python(value: Any) -> Any:
         r"::(vertex|edge|path|agtype|integer|float|numeric|boolean|string)$",
         re.IGNORECASE,
     )
-    value = _SUFFIX_RE.sub("", value.strip())
+    cleaned = _SUFFIX_RE.sub("", value.strip())
 
     try:
-        return json.loads(value)
+        return json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
         pass
-    return value
+    return cleaned
 
 
 def python_to_agtype(value: Any) -> str:
-    """Serialise a Python value to an agtype-compatible Cypher literal."""
+    """Serialise a Python value to an agtype-compatible Cypher literal.
+
+    Uses OpenCypher-standard escaping:
+    - Strings: single-quote doubling (``''``) — NOT backslash escaping.
+    - Backslashes: doubled (``\\\\``) to prevent unintended Cypher escape sequences.
+    - Booleans / null: lowercase literals.
+    - Numbers: plain ``str()``.
+    - Dicts / lists: JSON (for agtype map / list literals).
+
+    Args:
+        value: Python value to serialise.
+
+    Returns:
+        Cypher literal string (not yet wrapped in quotes for strings —
+        the returned string includes the surrounding quotes).
+    """
     if value is None:
         return "null"
     if isinstance(value, bool):
@@ -90,7 +127,11 @@ def python_to_agtype(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        return "'" + value.replace("'", "\\'") + "'"
+        escaped = value.replace("\\", "\\\\").replace("'", "''")
+        return f"'{escaped}'"
     if isinstance(value, (dict, list)):
+        # AGE accepts JSON-compatible map / list literals in Cypher.
         return json.dumps(value)
-    return f"'{value}'"
+    # Fallback: coerce to string
+    escaped = str(value).replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"

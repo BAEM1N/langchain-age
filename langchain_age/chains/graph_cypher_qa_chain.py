@@ -1,6 +1,19 @@
-"""Graph QA chain that generates Cypher for Apache AGE."""
+"""Graph QA chain that generates Cypher for Apache AGE.
+
+Mirrors ``GraphCypherQAChain`` from *langchain-neo4j*, adopting its:
+- ``allow_dangerous_requests`` safety gate
+- ``return_intermediate_steps`` option
+- ``return_direct`` option
+- ``include_types`` / ``exclude_types`` schema filtering
+- ``use_function_response`` tool-message mode
+- ``validate_cypher`` option (validate generated query before execution)
+
+Security note: The generated Cypher is executed against the database.
+Only enable ``allow_dangerous_requests`` in trusted environments.
+"""
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseLanguageModel
@@ -11,9 +24,11 @@ from langchain_core.runnables import Runnable, RunnableSerializable
 from langchain_age.graphs.age_graph import AGEGraph
 from langchain_age.utils.cypher import validate_cypher
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
-# Default prompts
+# Default prompts (mirrors Neo4j chain structure)
 # ---------------------------------------------------------------------------
 
 _CYPHER_GENERATION_SYSTEM = """You are an expert in Apache AGE graph database and Cypher query language.
@@ -22,9 +37,9 @@ Given a graph schema and a user question, generate a valid Cypher query to retri
 IMPORTANT AGE-specific rules:
 - Use standard openCypher syntax only — no APOC, no Neo4j-specific functions.
 - Do NOT wrap the query in SQL (that is handled automatically).
-- Always alias returned values: RETURN n.name AS name, not just RETURN n.name
+- Always alias returned values: RETURN n.name AS name, not just RETURN n.name.
+- Property names that are reserved words must be backtick-quoted: n.`desc`, n.`order`.
 - Use MATCH, WHERE, RETURN, CREATE, MERGE, SET as normal Cypher clauses.
-- Property access uses dot notation: n.property_name
 
 Graph schema:
 {schema}
@@ -52,9 +67,11 @@ QA_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-_FUNCTION_RESPONSE_SYSTEM = """You are an assistant that answers questions based on structured data
-returned from a graph database query.  The data is provided as a tool/function result.
-Answer the question using only this data, concisely and accurately."""
+_FUNCTION_RESPONSE_SYSTEM = (
+    "You are an assistant that answers questions based on structured data "
+    "returned from a graph database query.  The data is provided as a "
+    "tool/function result.  Answer using only this data, concisely and accurately."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +85,11 @@ class AGEGraphCypherQAChain(RunnableSerializable):
     Mirrors ``GraphCypherQAChain`` from *langchain-neo4j*.
 
     Pipeline:
-        1. ``cypher_generation_chain`` → Cypher query string
-        2. Execute Cypher against ``AGEGraph``
-        3. ``qa_chain`` → natural-language answer
+
+    1. ``cypher_generation_chain`` → Cypher query string
+    2. Optional ``validate_cypher`` check
+    3. Execute Cypher against ``AGEGraph``
+    4. ``qa_chain`` → natural-language answer
 
     Args:
         graph: Connected :class:`~langchain_age.graphs.AGEGraph`.
@@ -79,14 +98,22 @@ class AGEGraphCypherQAChain(RunnableSerializable):
         input_key: Input dict key for the user question.
         output_key: Output dict key for the answer.
         top_k: Max DB rows to feed into the QA step.
-        return_intermediate_steps: Include Cypher + raw results in output.
-        return_direct: Skip QA chain, return raw DB results.
-        include_types: Only expose these node/edge types when building the
+        return_intermediate_steps: Include generated Cypher + raw DB results
+            in the output dict.
+        return_direct: Skip the QA step, return raw DB results as the answer.
+        include_types: Whitelist of node/edge label types to expose in the
             schema string passed to the Cypher-generation prompt.
-        exclude_types: Hide these node/edge types from the schema string.
+        exclude_types: Blacklist of node/edge label types to hide.
         use_function_response: Pass DB results as an LLM tool/function
             response instead of embedding them in the prompt body.
-        allow_dangerous_requests: Safety gate (must be ``True``).
+        validate_cypher: Run lightweight Cypher validation before executing;
+            returns an error message instead of raising on invalid queries.
+        allow_dangerous_requests: Safety gate — must be ``True`` to use.
+
+    !!! warning "Security note"
+        This chain generates and executes arbitrary Cypher queries.
+        Use ``allow_dangerous_requests=True`` only in trusted environments,
+        and consider restricting schema exposure via ``include_types``.
     """
 
     graph: AGEGraph
@@ -100,12 +127,13 @@ class AGEGraphCypherQAChain(RunnableSerializable):
     include_types: List[str] = []
     exclude_types: List[str] = []
     use_function_response: bool = False
+    validate_cypher: bool = True
     allow_dangerous_requests: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
     # ------------------------------------------------------------------
-    # Factory
+    # Factory (mirrors Neo4jGraph.from_llm)
     # ------------------------------------------------------------------
 
     @classmethod
@@ -120,34 +148,40 @@ class AGEGraphCypherQAChain(RunnableSerializable):
         qa_prompt: BasePromptTemplate = QA_PROMPT,
         include_types: Optional[List[str]] = None,
         exclude_types: Optional[List[str]] = None,
+        validate_cypher: bool = True,
         allow_dangerous_requests: bool = False,
         **kwargs: Any,
     ) -> AGEGraphCypherQAChain:
-        """Build the chain from a single LLM (or separate cypher/qa LLMs).
+        """Build the chain from a single LLM (or separate cypher / qa LLMs).
 
         Args:
-            llm: Default LLM for both steps.
+            llm: Default LLM used for both Cypher generation and QA.
             graph: Connected :class:`~langchain_age.graphs.AGEGraph`.
-            cypher_llm: Override LLM for Cypher generation.
-            qa_llm: Override LLM for QA step.
-            cypher_prompt: Prompt for Cypher generation.
-            qa_prompt: Prompt for the QA step.
+            cypher_llm: Override LLM for the Cypher-generation step.
+            qa_llm: Override LLM for the QA step.
+            cypher_prompt: Prompt template for Cypher generation.
+            qa_prompt: Prompt template for the QA step.
             include_types: Whitelist for schema exposure.
             exclude_types: Blacklist for schema exposure.
-            allow_dangerous_requests: Must be ``True``.
+            validate_cypher: Enable lightweight pre-execution query validation.
+            allow_dangerous_requests: Must be ``True`` to enable execution.
         """
         if not allow_dangerous_requests:
             raise ValueError(
-                "AGEGraphCypherQAChain executes arbitrary Cypher against your database. "
-                "Set ``allow_dangerous_requests=True`` to confirm you understand the risk."
+                "AGEGraphCypherQAChain executes arbitrary Cypher against your "
+                "database.  Set ``allow_dangerous_requests=True`` to confirm "
+                "you understand the risk."
             )
 
         return cls(
             graph=graph,
-            cypher_generation_chain=cypher_prompt | (cypher_llm or llm) | StrOutputParser(),
+            cypher_generation_chain=(
+                cypher_prompt | (cypher_llm or llm) | StrOutputParser()
+            ),
             qa_chain=qa_prompt | (qa_llm or llm) | StrOutputParser(),
             include_types=include_types or [],
             exclude_types=exclude_types or [],
+            validate_cypher=validate_cypher,
             allow_dangerous_requests=True,
             **kwargs,
         )
@@ -163,15 +197,18 @@ class AGEGraphCypherQAChain(RunnableSerializable):
 
         ss = self.graph.structured_schema
         node_props = {
-            k: v for k, v in ss.get("node_props", {}).items()
+            k: v
+            for k, v in ss.get("node_props", {}).items()
             if self._type_allowed(k)
         }
         rel_props = {
-            k: v for k, v in ss.get("rel_props", {}).items()
+            k: v
+            for k, v in ss.get("rel_props", {}).items()
             if self._type_allowed(k)
         }
         rels = [
-            r for r in ss.get("relationships", [])
+            r
+            for r in ss.get("relationships", [])
             if self._type_allowed(r["start"]) and self._type_allowed(r["end"])
         ]
         return AGEGraph._build_schema_string(node_props, rel_props, rels)
@@ -183,9 +220,13 @@ class AGEGraphCypherQAChain(RunnableSerializable):
             return False
         return True
 
-    def _call(self, inputs: Dict[str, Any], run_manager: Optional[Any] = None) -> Dict[str, Any]:
+    def _call(
+        self, inputs: Dict[str, Any], run_manager: Optional[Any] = None
+    ) -> Dict[str, Any]:
         if not self.allow_dangerous_requests:
-            raise ValueError("Set allow_dangerous_requests=True to use AGEGraphCypherQAChain.")
+            raise ValueError(
+                "Set allow_dangerous_requests=True to use AGEGraphCypherQAChain."
+            )
 
         question = inputs[self.input_key]
         callbacks = run_manager.get_child() if run_manager else None
@@ -196,35 +237,63 @@ class AGEGraphCypherQAChain(RunnableSerializable):
             config={"callbacks": callbacks},
         ).strip()
 
-        # Strip accidental markdown fences
+        # Strip accidental markdown fences (mirrors Neo4j chain behaviour)
         if cypher_query.startswith("```"):
             cypher_query = "\n".join(
-                l for l in cypher_query.splitlines() if not l.startswith("```")
+                line
+                for line in cypher_query.splitlines()
+                if not line.startswith("```")
             ).strip()
 
+        logger.debug("Generated Cypher: %s", cypher_query)
         if run_manager:
-            run_manager.on_text("Generated Cypher:\n", end="", verbose=self.verbose)
-            run_manager.on_text(cypher_query, color="green", end="\n", verbose=self.verbose)
+            run_manager.on_text(
+                "Generated Cypher:\n", end="", verbose=self.verbose
+            )
+            run_manager.on_text(
+                cypher_query, color="green", end="\n", verbose=self.verbose
+            )
 
-        error = validate_cypher(cypher_query)
-        if error:
-            msg = f"Generated Cypher is invalid: {error}"
-            return {self.output_key: msg}
+        # Step 2 — Optional lightweight validation
+        if self.validate_cypher:
+            error = validate_cypher(cypher_query)
+            if error:
+                logger.warning("Generated Cypher failed validation: %s", error)
+                return {
+                    self.output_key: f"The generated Cypher query is invalid: {error}"
+                }
 
-        # Step 2 — Execute against AGE
+        # Step 3 — Execute against AGE
         try:
             db_results = self.graph.query(cypher_query)[: self.top_k]
         except Exception as exc:
-            return {self.output_key: f"Graph query failed: {exc}"}
+            # Log the full exception internally but return a generic message
+            # to the caller — avoids leaking connection strings / schema details.
+            logger.error(
+                "Graph query failed for question %r: %s", question, exc, exc_info=True
+            )
+            return {
+                self.output_key: (
+                    "The graph query could not be completed. "
+                    "Please rephrase your question or try again later."
+                )
+            }
 
+        logger.debug("Graph results (%d rows): %s", len(db_results), db_results)
         if run_manager:
-            run_manager.on_text("Graph results:\n", end="", verbose=self.verbose)
-            run_manager.on_text(str(db_results), color="yellow", end="\n", verbose=self.verbose)
+            run_manager.on_text(
+                "Graph results:\n", end="", verbose=self.verbose
+            )
+            run_manager.on_text(
+                str(db_results), color="yellow", end="\n", verbose=self.verbose
+            )
 
         if self.return_direct:
-            final = str(db_results)
+            final: Any = str(db_results)
         elif self.use_function_response:
-            final = self._function_response_answer(question, cypher_query, db_results, callbacks)
+            final = self._function_response_answer(
+                question, cypher_query, db_results, callbacks
+            )
         else:
             final = self.qa_chain.invoke(
                 {"context": db_results, "question": question},
@@ -248,6 +317,7 @@ class AGEGraphCypherQAChain(RunnableSerializable):
     ) -> str:
         """Pass DB results as a tool/function message for models that support it."""
         import json
+
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         tool_call_id = "graph_query_result"
@@ -255,15 +325,30 @@ class AGEGraphCypherQAChain(RunnableSerializable):
             HumanMessage(content=question),
             AIMessage(
                 content="",
-                tool_calls=[{"name": "graph_query", "args": {"cypher": cypher}, "id": tool_call_id}],
+                tool_calls=[
+                    {
+                        "name": "graph_query",
+                        "args": {"cypher": cypher},
+                        "id": tool_call_id,
+                    }
+                ],
             ),
-            ToolMessage(content=json.dumps(db_results), tool_call_id=tool_call_id),
-            HumanMessage(content=_FUNCTION_RESPONSE_SYSTEM + "\n\nAnswer the question above."),
+            ToolMessage(
+                content=json.dumps(db_results), tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content=_FUNCTION_RESPONSE_SYSTEM + "\n\nAnswer the question above."
+            ),
         ]
         response = self.qa_chain.invoke(messages, config={"callbacks": callbacks})
         return response if isinstance(response, str) else str(response)
 
-    def invoke(self, input: Dict[str, Any], config: Optional[Any] = None, **kwargs: Any) -> Dict[str, Any]:
+    def invoke(
+        self,
+        input: Dict[str, Any],
+        config: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         return self._call(input)
 
     def run(self, query: str, **kwargs: Any) -> str:

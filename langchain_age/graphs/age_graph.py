@@ -1,7 +1,21 @@
-"""Apache AGE graph store for LangChain – backed by apache-age-python SDK."""
+"""Apache AGE graph store for LangChain – backed by apache-age-python SDK.
+
+Design notes (compared with langchain-neo4j ``Neo4jGraph``):
+- Uses ``wrap_cypher_query`` instead of ``age_sdk.cypher()`` because the SDK
+  generates ``cypher(NULL, NULL)`` which PG18 rejects (requires a name constant).
+- Backtick-quotes all user-supplied labels and property names throughout,
+  following the Neo4j convention: ``MERGE (n:`Label`) SET n.`prop` = …``.
+- Uses ``''`` (single-quote doubling) for Cypher string escaping — the
+  OpenCypher standard — instead of the non-standard ``\\'``.
+- Exposes ``close()`` and context-manager support (``__enter__``/``__exit__``)
+  matching the Neo4j driver pattern.
+"""
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     import age as age_sdk
@@ -19,6 +33,8 @@ from langchain_community.graphs.graph_store import GraphStore
 
 from langchain_age.utils.agtype import agobj_to_dict
 from langchain_age.utils.cypher import (
+    escape_cypher_identifier,
+    escape_cypher_string,
     extract_cypher_return_aliases,
     validate_cypher,
     wrap_cypher_query,
@@ -28,15 +44,17 @@ from langchain_age.utils.cypher import (
 class AGEGraph(GraphStore):
     """LangChain ``GraphStore`` backed by PostgreSQL + Apache AGE.
 
-    Uses the official **apache-age-python** SDK (psycopg3) for connections,
-    which registers agtype type adapters automatically so query results come
-    back as native ``Vertex`` / ``Edge`` / ``Path`` objects.
-
     Mirrors the ``Neo4jGraph`` interface from *langchain-neo4j*.
 
+    Uses the official **apache-age-python** SDK (psycopg3) for the
+    ``setUpAge`` initialisation step (which registers agtype type adapters),
+    but bypasses ``age_sdk.cypher()`` for query execution — the SDK generates
+    ``cypher(NULL, NULL)`` which is rejected by PG18.  Instead, queries are
+    built via :func:`~langchain_age.utils.cypher.wrap_cypher_query` which
+    produces the PG18-compatible ``cypher('name', $$ … $$)`` form.
+
     Args:
-        connection_string: psycopg3-compatible DSN or URI, e.g.
-            ``"host=localhost port=5432 dbname=mydb user=foo password=bar"``.
+        connection_string: psycopg3-compatible DSN or URI.
         graph_name: Name of the AGE graph (created automatically if absent).
         timeout: Optional statement timeout in seconds.
         refresh_schema: Load schema immediately on init.
@@ -44,6 +62,17 @@ class AGEGraph(GraphStore):
         enhanced_schema: Sample property values to enrich the schema string.
         include_types: Whitelist of node/edge label types to expose in schema.
         exclude_types: Blacklist of node/edge label types to hide from schema.
+
+    Example::
+
+        graph = AGEGraph("host=localhost dbname=mydb user=foo password=bar",
+                         graph_name="kg")
+        graph.query("MATCH (n:Person) RETURN n.name AS name")
+
+    Context-manager usage (mirrors Neo4j driver)::
+
+        with AGEGraph(conn_str, "kg") as graph:
+            graph.query("MATCH (n) RETURN count(n) AS total")
     """
 
     def __init__(
@@ -77,6 +106,24 @@ class AGEGraph(GraphStore):
             self.refresh_schema()
 
     # ------------------------------------------------------------------
+    # Context-manager support (mirrors Neo4j driver pattern)
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        try:
+            if not self._conn.closed:
+                self._conn.close()
+        except Exception:
+            logger.debug("Exception while closing AGEGraph connection", exc_info=True)
+
+    def __enter__(self) -> AGEGraph:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------
     # GraphStore interface
     # ------------------------------------------------------------------
 
@@ -95,22 +142,41 @@ class AGEGraph(GraphStore):
     ) -> List[Dict[str, Any]]:
         """Execute a Cypher query and return results as plain Python dicts.
 
-        The SDK wraps the Cypher in the required SQL ``cypher()`` call and
-        deserialises agtype results into ``Vertex`` / ``Edge`` / ``Path``
-        objects, which are then converted to plain dicts.
+        Builds a PG18-compatible ``SELECT * FROM cypher('graph', $$ … $$)``
+        SQL statement directly (bypassing ``age_sdk.cypher()``), then converts
+        ``Vertex`` / ``Edge`` / ``Path`` results to plain Python dicts via
+        :func:`~langchain_age.utils.agtype.agobj_to_dict`.
 
         Args:
             query: Pure Cypher string.
-            params: Not currently supported by AGE; values must be inlined.
+            params: Not currently supported by AGE; values must be inlined
+                (use :func:`~langchain_age.utils.cypher.escape_cypher_string`
+                for safe inlining).
 
         Returns:
             List of row dicts, one per result row.
+
+        Raises:
+            ValueError: If the Cypher query fails basic validation.
+            psycopg.Error: On database-level errors.
         """
+        if params:
+            logger.warning(
+                "AGEGraph.query() received params=%r but AGE does not support "
+                "parameterised Cypher — values must be inlined in the query string.",
+                params,
+            )
+
         error = validate_cypher(query)
         if error:
             raise ValueError(f"Invalid Cypher: {error}")
 
         aliases = extract_cypher_return_aliases(query)
+        sql = wrap_cypher_query(
+            self.graph_name,
+            query,
+            [(alias, "agtype") for alias in aliases],
+        )
 
         with self._conn.cursor() as cur:
             if self._timeout:
@@ -119,13 +185,6 @@ class AGEGraph(GraphStore):
                     (int(self._timeout * 1000),),
                 )
             try:
-                # age_sdk.cypher() generates cypher(NULL,NULL) which PG18 rejects.
-                # Build the SQL directly with literal graph name + dollar-quoted query.
-                sql = wrap_cypher_query(
-                    self.graph_name,
-                    query,
-                    [(alias, "agtype") for alias in aliases],
-                )
                 cur.execute(sql)
                 if cur.description is None:
                     self._conn.commit()
@@ -175,30 +234,51 @@ class AGEGraph(GraphStore):
         graph_documents: List[GraphDocument],
         include_source: bool = False,
     ) -> None:
-        """Upsert ``GraphDocument`` objects into the AGE graph."""
+        """Upsert ``GraphDocument`` objects into the AGE graph.
+
+        All labels and property values are escaped using
+        :func:`~langchain_age.utils.cypher.escape_cypher_identifier` (backtick
+        quoting) and :func:`~langchain_age.utils.cypher.escape_cypher_string`
+        (``''`` doubling) respectively, mirroring the Neo4j convention.
+        """
         for doc in graph_documents:
             for node in doc.nodes:
+                label = escape_cypher_identifier(node.type)
                 props = self._props_to_cypher(node.properties or {})
-                self._run_write(f"MERGE (n:{node.type} {{id: '{node.id}'}}) SET n += {props}")
+                node_id = escape_cypher_string(str(node.id))
+                self._run_write(
+                    f"MERGE (n:{label} {{id: '{node_id}'}}) SET n += {props}"
+                )
 
             for rel in doc.relationships:
+                src_label = escape_cypher_identifier(rel.source.type)
+                tgt_label = escape_cypher_identifier(rel.target.type)
+                rel_label = escape_cypher_identifier(rel.type)
                 props = self._props_to_cypher(rel.properties or {})
+                src_id = escape_cypher_string(str(rel.source.id))
+                tgt_id = escape_cypher_string(str(rel.target.id))
                 self._run_write(
-                    f"MATCH (a:{rel.source.type} {{id: '{rel.source.id}'}}), "
-                    f"(b:{rel.target.type} {{id: '{rel.target.id}'}}) "
-                    f"MERGE (a)-[r:{rel.type}]->(b) SET r += {props}"
+                    f"MATCH (a:{src_label} {{id: '{src_id}'}}), "
+                    f"(b:{tgt_label} {{id: '{tgt_id}'}}) "
+                    f"MERGE (a)-[r:{rel_label}]->(b) SET r += {props}"
                 )
 
             if include_source and doc.source:
-                src_id = doc.source.metadata.get("source", "unknown")
-                content = doc.source.page_content.replace("'", "\\'")[:500]
+                src_id_val = escape_cypher_string(
+                    doc.source.metadata.get("source", "unknown")
+                )
+                content = escape_cypher_string(doc.source.page_content[:500])
                 self._run_write(
-                    f"MERGE (s:Document {{source: '{src_id}'}}) SET s.content = '{content}'"
+                    f"MERGE (s:Document {{source: '{src_id_val}'}}) "
+                    f"SET s.content = '{content}'"
                 )
                 for node in doc.nodes:
+                    node_label = escape_cypher_identifier(node.type)
+                    node_id_val = escape_cypher_string(str(node.id))
                     self._run_write(
-                        f"MATCH (s:Document {{source: '{src_id}'}}), "
-                        f"(n:{node.type} {{id: '{node.id}'}}) MERGE (s)-[:MENTIONS]->(n)"
+                        f"MATCH (s:Document {{source: '{src_id_val}'}}), "
+                        f"(n:{node_label} {{id: '{node_id_val}'}}) "
+                        f"MERGE (s)-[:MENTIONS]->(n)"
                     )
 
     # ------------------------------------------------------------------
@@ -220,7 +300,7 @@ class AGEGraph(GraphStore):
     # ------------------------------------------------------------------
 
     def _connect(self) -> psycopg.Connection:
-        # ClientCursor is required by the AGE SDK's cypher() helper (uses mogrify)
+        # ClientCursor is required by setUpAge (uses mogrify internally).
         conn = psycopg.connect(self._conn_string, cursor_factory=ClientCursor)
         conn.autocommit = False
         setUpAge(conn, self.graph_name)
@@ -264,11 +344,25 @@ class AGEGraph(GraphStore):
         return labels
 
     def _sample_props(self, label: str, kind: str) -> List[str]:
+        """Sample property keys for *label* by fetching up to 5 nodes/edges.
+
+        Uses backtick-quoted label to handle reserved Cypher words, following
+        the Neo4j pattern.  Failures are logged and return an empty list rather
+        than propagating — a missing property list degrades schema quality but
+        should not abort the entire ``refresh_schema`` call.
+        """
         alias = "n" if kind == "v" else "r"
-        cypher = f"MATCH ({alias}:{label}) RETURN {alias} LIMIT 5"
+        escaped_label = escape_cypher_identifier(label)
+        cypher = f"MATCH ({alias}:{escaped_label}) RETURN {alias} LIMIT 5"
         try:
             rows = self.query(cypher)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed to sample properties for label %r (%s): %s",
+                label,
+                "vertex" if kind == "v" else "edge",
+                exc,
+            )
             return []
         keys: set[str] = set()
         for row in rows:
@@ -282,11 +376,15 @@ class AGEGraph(GraphStore):
     def _fetch_relationships(self, edge_labels: List[str]) -> List[Dict[str, str]]:
         triples: List[Dict[str, str]] = []
         for label in edge_labels:
+            escaped = escape_cypher_identifier(label)
             try:
                 rows = self.query(
-                    f"MATCH (a)-[r:{label}]->(b) RETURN a, r, b LIMIT 5"
+                    f"MATCH (a)-[r:{escaped}]->(b) RETURN a, r, b LIMIT 5"
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Failed to fetch relationships for edge label %r: %s", label, exc
+                )
                 continue
             for row in rows:
                 a_label = self._extract_label(row.get("a"))
@@ -306,33 +404,59 @@ class AGEGraph(GraphStore):
         return "Unknown"
 
     def _run_write(self, cypher: str) -> None:
+        """Execute a write-only Cypher statement (no RETURN expected)."""
         sql = wrap_cypher_query(self.graph_name, cypher, [("v", "agtype")])
-        with self._conn.cursor() as cur:
-            cur.execute(sql)
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+        except Exception:
+            self._conn.rollback()
+            raise
         self._conn.commit()
 
     @staticmethod
     def _props_to_cypher(props: Dict[str, Any]) -> str:
+        """Serialise a Python dict to a Cypher map literal.
+
+        - Keys are backtick-quoted (handles reserved words like ``desc``).
+        - String values use ``''`` escaping (OpenCypher standard).
+        - Booleans, null, and numbers are rendered as Cypher literals.
+
+        Example::
+
+            {"name": "Alice's cat", "age": 3}
+            → {`name`: 'Alice''s cat', `age`: 3}
+        """
         if not props:
             return "{}"
         pairs = []
         for k, v in props.items():
-            if isinstance(v, str):
-                pairs.append(f"{k}: '{v.replace(chr(39), chr(92)+chr(39))}'")
-            elif isinstance(v, bool):
-                pairs.append(f"{k}: {'true' if v else 'false'}")
+            key = escape_cypher_identifier(k)
+            if isinstance(v, bool):
+                pairs.append(f"{key}: {'true' if v else 'false'}")
             elif v is None:
-                pairs.append(f"{k}: null")
+                pairs.append(f"{key}: null")
+            elif isinstance(v, (int, float)):
+                pairs.append(f"{key}: {v}")
+            elif isinstance(v, str):
+                pairs.append(f"{key}: '{escape_cypher_string(v)}'")
             else:
-                pairs.append(f"{k}: {v}")
+                # dict / list — JSON-serialise as agtype map/list literal
+                import json
+                pairs.append(f"{key}: {json.dumps(v)}")
         return "{" + ", ".join(pairs) + "}"
 
     @staticmethod
     def _sanitize_value(value: Any, max_len: int = 1000) -> Any:
+        """Truncate oversized strings and strip internal ``_`` prefixed keys."""
         if isinstance(value, str) and len(value) > max_len:
             return value[:max_len] + "…"
         if isinstance(value, dict):
-            return {k: AGEGraph._sanitize_value(v, max_len) for k, v in value.items() if not str(k).startswith("_")}
+            return {
+                k: AGEGraph._sanitize_value(v, max_len)
+                for k, v in value.items()
+                if not str(k).startswith("_")
+            }
         if isinstance(value, list):
             return [AGEGraph._sanitize_value(v, max_len) for v in value]
         return value
@@ -345,10 +469,14 @@ class AGEGraph(GraphStore):
     ) -> str:
         lines = ["Node labels and properties:"]
         for label, props in node_props.items():
-            lines.append(f"  :{label} {{{', '.join(props) or '(no properties sampled)'}}}")
+            lines.append(
+                f"  :{label} {{{', '.join(props) or '(no properties sampled)'}}}"
+            )
         lines += ["", "Relationship types and properties:"]
         for label, props in edge_props.items():
-            lines.append(f"  [:{label}] {{{', '.join(props) or '(no properties sampled)'}}}")
+            lines.append(
+                f"  [:{label}] {{{', '.join(props) or '(no properties sampled)'}}}"
+            )
         lines += ["", "Relationship patterns:"]
         for rel in relationships:
             lines.append(f"  (:{rel['start']})-[:{rel['type']}]->(:{rel['end']})")
