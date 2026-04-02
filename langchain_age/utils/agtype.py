@@ -1,59 +1,88 @@
-"""Utilities for converting between Apache AGE agtype and Python objects."""
+"""Utilities for converting Apache AGE SDK objects to plain Python dicts.
+
+With the apache-age-python SDK installed, psycopg3 automatically deserialises
+agtype column values into ``Vertex``, ``Edge``, ``Path``, or plain Python
+scalars via the registered ``AgeLoader``.  This module converts those SDK
+objects into plain dicts / lists so they can be used in LangChain pipelines
+without an AGE dependency downstream.
+"""
 from __future__ import annotations
 
 import json
 import re
 from typing import Any
 
+try:
+    from age import Edge, Path, Vertex
+    _AGE_SDK_AVAILABLE = True
+except ImportError:
+    _AGE_SDK_AVAILABLE = False
+    Vertex = Edge = Path = None  # type: ignore[assignment,misc]
+
+
+def agobj_to_dict(obj: Any) -> Any:
+    """Convert an apache-age-python SDK object to a plain Python value.
+
+    Handles:
+    - ``Vertex``  → ``{"id": ..., "label": ..., "properties": {...}}``
+    - ``Edge``    → ``{"id": ..., "label": ..., "start_id": ..., "end_id": ..., "properties": {...}}``
+    - ``Path``    → list of converted entities
+    - ``list``    → recursively converted list
+    - ``dict``    → recursively converted dict
+    - scalars     → returned as-is
+    """
+    if _AGE_SDK_AVAILABLE:
+        if isinstance(obj, Vertex):
+            return {
+                "id": obj.id,
+                "label": obj.label,
+                "properties": obj.properties or {},
+            }
+        if isinstance(obj, Edge):
+            return {
+                "id": obj.id,
+                "label": obj.label,
+                "start_id": obj.start_id,
+                "end_id": obj.end_id,
+                "properties": obj.properties or {},
+            }
+        if isinstance(obj, Path):
+            return [agobj_to_dict(e) for e in obj]
+
+    if isinstance(obj, list):
+        return [agobj_to_dict(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: agobj_to_dict(v) for k, v in obj.items()}
+    return obj
+
 
 def agtype_to_python(value: Any) -> Any:
-    """Convert an agtype value returned from AGE into a native Python object.
+    """Best-effort conversion for raw agtype strings (fallback path).
 
-    AGE returns results as agtype strings with optional type suffixes like
-    ``::vertex``, ``::edge``, ``::path``. This function strips those suffixes
-    and parses the JSON-like payload into a Python dict / list / scalar.
-
-    Args:
-        value: Raw value returned from psycopg2 cursor (str, int, float, etc.)
-
-    Returns:
-        Native Python object (dict, list, str, int, float, bool, or None).
+    When the SDK is active, psycopg3 handles conversion before this is
+    called.  This function is kept as a fallback for edge cases where
+    a raw agtype string slips through (e.g. in metadata columns).
     """
     if value is None:
         return None
-
     if not isinstance(value, str):
-        return value
+        return agobj_to_dict(value)
 
-    # Strip AGE graph-type suffixes produced by agtype output
     _SUFFIX_RE = re.compile(
         r"::(vertex|edge|path|agtype|integer|float|numeric|boolean|string)$",
         re.IGNORECASE,
     )
     value = _SUFFIX_RE.sub("", value.strip())
 
-    # Try JSON decode first (handles objects, arrays, quoted strings, booleans, numbers)
     try:
         return json.loads(value)
     except (json.JSONDecodeError, ValueError):
         pass
-
-    # Bare unquoted string fallback
     return value
 
 
 def python_to_agtype(value: Any) -> str:
-    """Serialize a Python value to an agtype-compatible string literal.
-
-    This is used when injecting literal values into Cypher query strings.
-    Prefer parameterised queries where possible.
-
-    Args:
-        value: Python value to serialize.
-
-    Returns:
-        String representation suitable for embedding in a Cypher expression.
-    """
+    """Serialise a Python value to an agtype-compatible Cypher literal."""
     if value is None:
         return "null"
     if isinstance(value, bool):
@@ -61,9 +90,7 @@ def python_to_agtype(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        # Escape single quotes inside string
-        escaped = value.replace("'", "\\'")
-        return f"'{escaped}'"
+        return "'" + value.replace("'", "\\'") + "'"
     if isinstance(value, (dict, list)):
         return json.dumps(value)
     return f"'{value}'"

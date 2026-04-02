@@ -1,8 +1,18 @@
 services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Single PostgreSQL container with THREE extensions:
+  #   1. Apache AGE   – graph engine (Cypher on PostgreSQL)
+  #   2. pgvector     – vector similarity search
+  #   3. pg_trgm      – trigram similarity (useful for hybrid search / LIKE)
+  # ─────────────────────────────────────────────────────────────────────────
   postgres-age:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PGVECTOR_VERSION: "0.7.4"
+    image: langchain-age-db:latest
     container_name: langchain-age-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-langchain}
@@ -13,11 +23,20 @@ services:
     volumes:
       - postgres_age_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langchain} -d ${POSTGRES_DB:-langchain_age}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test:
+        - CMD-SHELL
+        - >
+          pg_isready -U ${POSTGRES_USER:-langchain} -d ${POSTGRES_DB:-langchain_age}
+          && psql -U ${POSTGRES_USER:-langchain} -d ${POSTGRES_DB:-langchain_age}
+             -c "SELECT 1 FROM pg_extension WHERE extname = 'age'" | grep -q 1
+          && psql -U ${POSTGRES_USER:-langchain} -d ${POSTGRES_DB:-langchain_age}
+             -c "SELECT 1 FROM pg_extension WHERE extname = 'vector'" | grep -q 1
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
+    shm_size: "256mb"            # recommended for PostgreSQL under load
 
 volumes:
   postgres_age_data:

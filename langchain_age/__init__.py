@@ -1,10 +1,17 @@
 """langchain-age: Apache AGE + pgvector integration for LangChain.
 
+Drop-in replacement pattern (mirrors langchain-neo4j):
+
+    from langchain_age import AGEGraph
+    from langchain_age import AGEVector
+    from langchain_age import AGEGraphCypherQAChain
+
 Provides:
-- ``AGEGraph``              – GraphStore backed by PostgreSQL + Apache AGE
-- ``AGEVector``             – VectorStore backed by pgvector
-- ``AGEGraphCypherQAChain`` – QA chain that generates Cypher for AGE
-- ``DistanceStrategy``      – Distance metric enum for AGEVector
+- ``AGEGraph``              – GraphStore (PostgreSQL + Apache AGE)
+- ``AGEVector``             – VectorStore (pgvector) with optional AGE linkage
+- ``AGEGraphCypherQAChain`` – LLM chain that generates Cypher for AGE
+- ``DistanceStrategy``      – Cosine / Euclidean / InnerProduct enum
+- ``SearchType``            – Vector / Hybrid search enum
 """
 from langchain_age.chains.graph_cypher_qa_chain import (
     AGEGraphCypherQAChain,
@@ -12,15 +19,16 @@ from langchain_age.chains.graph_cypher_qa_chain import (
     QA_PROMPT,
 )
 from langchain_age.graphs.age_graph import AGEGraph
-from langchain_age.vectorstores.age_vector import AGEVector, DistanceStrategy
+from langchain_age.vectorstores.age_vector import AGEVector, DistanceStrategy, SearchType
 
 __all__ = [
     "AGEGraph",
     "AGEVector",
     "AGEGraphCypherQAChain",
     "DistanceStrategy",
+    "SearchType",
     "CYPHER_GENERATION_PROMPT",
     "QA_PROMPT",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
