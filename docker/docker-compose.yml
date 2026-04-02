@@ -1,0 +1,24 @@
+services:
+  postgres-age:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: langchain-age-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-langchain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-langchain}
+      POSTGRES_DB: ${POSTGRES_DB:-langchain_age}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_age_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langchain} -d ${POSTGRES_DB:-langchain_age}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_age_data:
+    driver: local
