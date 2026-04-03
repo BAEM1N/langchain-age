@@ -2,19 +2,29 @@
 
 **LangChain integration for [Apache AGE](https://age.apache.org/) (graph) + [pgvector](https://github.com/pgvector/pgvector) (vector) on PostgreSQL.**
 
-Mirrors the `langchain-neo4j` API so teams already familiar with the Neo4j integration can switch with minimal friction.
+Drop-in replacement for `langchain-neo4j` — same API, runs on PostgreSQL instead of Neo4j.
 
----
+```python
+from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
+```
 
-## Features
+## Installation
 
-| Component | Description |
-|---|---|
-| `AGEGraph` | `GraphStore` backed by PostgreSQL + Apache AGE. Executes Cypher via the `cypher()` SQL wrapper, introspects schema, and supports `GraphDocument` upserts. |
-| `AGEVector` | `VectorStore` backed by pgvector. Supports cosine / L2 / inner-product similarity, HNSW & IVFFlat indexing, MMR search, and optional linkage to AGE graph nodes. |
-| `AGEGraphCypherQAChain` | LLM chain that auto-generates Cypher for Apache AGE, executes it, and returns a natural-language answer. Drop-in replacement for `GraphCypherQAChain`. |
+Three install modes depending on what you need:
 
----
+```bash
+# Graph only (Apache AGE)
+pip install "langchain-age[graph]"
+
+# Vector only (pgvector)
+pip install "langchain-age[vector]"
+
+# Everything (Graph + Vector)
+pip install "langchain-age[all]"
+```
+
+> **Note**: The Apache AGE Python driver is installed from GitHub (the PyPI version is outdated).
+> This is the [official SDK](https://github.com/apache/age/tree/master/drivers/python) maintained by the Apache AGE project.
 
 ## Quick Start
 
@@ -22,137 +32,165 @@ Mirrors the `langchain-neo4j` API so teams already familiar with the Neo4j integ
 
 ```bash
 cd docker
-cp .env.example .env          # edit credentials if needed
 docker compose up -d
 ```
 
-This spins up a single PostgreSQL container with both **Apache AGE** and **pgvector** pre-installed.
+Single container: PostgreSQL 18 + Apache AGE 1.7.0 + pgvector.
 
-### 2. Install the library
-
-```bash
-pip install -e ".[dev]"
-```
-
-### 3. Use AGEGraph
+### 2. Graph mode
 
 ```python
 from langchain_age import AGEGraph
 
 graph = AGEGraph(
-    connection_string="host=localhost port=5432 dbname=langchain_age user=langchain password=langchain",
+    "host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
     graph_name="my_graph",
 )
 
-# Run Cypher directly
-graph.query("CREATE (:Person {name: 'Alice'})")
+graph.query("CREATE (:Person {name: 'Alice', age: 30})")
 results = graph.query("MATCH (n:Person) RETURN n.name AS name")
-print(results)  # [{'name': 'Alice'}]
-
-# Inspect the schema
-print(graph.schema)
+# [{'name': 'Alice'}]
 ```
 
-### 4. Use AGEVector
+### 3. Vector mode
 
 ```python
 from langchain_age import AGEVector, DistanceStrategy
-from langchain_openai import OpenAIEmbeddings
 
 store = AGEVector(
-    connection_string="...",
-    embedding_function=OpenAIEmbeddings(),
-    collection_name="my_vectors",
+    connection_string="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
+    embedding_function=my_embeddings,
+    collection_name="docs",
     distance_strategy=DistanceStrategy.COSINE,
 )
 
-store.add_texts(["Apache AGE adds Cypher to PostgreSQL.", "pgvector enables vector search."])
-
-results = store.similarity_search("graph database", k=2)
-for doc in results:
-    print(doc.page_content)
+store.add_texts(["Apache AGE adds Cypher to PostgreSQL."])
+results = store.similarity_search("graph database", k=5)
 ```
 
-### 5. Use AGEGraphCypherQAChain
+### 4. Graph + Vector (GraphRAG)
+
+```python
+# Vectorise existing graph nodes
+store = AGEVector.from_existing_graph(
+    embedding=my_embeddings,
+    connection_string="...",
+    graph_name="my_graph",
+    node_label="Document",
+    text_node_properties=["title", "content"],
+)
+```
+
+### 5. Cypher QA Chain
 
 ```python
 from langchain_age import AGEGraph, AGEGraphCypherQAChain
 from langchain_openai import ChatOpenAI
 
-graph = AGEGraph(connection_string="...", graph_name="movies")
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
 chain = AGEGraphCypherQAChain.from_llm(
-    llm,
-    graph=graph,
+    ChatOpenAI(model="gpt-4o-mini"),
+    graph=AGEGraph("...", "movies"),
     allow_dangerous_requests=True,
-    verbose=True,
 )
-
 answer = chain.run("Which movies did Tom Hanks act in?")
-print(answer)
 ```
 
----
+### 6. Long-term Memory & Checkpointing
 
-## AGE vs Neo4j – Key Differences
+Uses the same PostgreSQL instance via [langgraph-checkpoint-postgres](https://langchain-ai.github.io/langgraph/reference/checkpoints/#langgraph.checkpoint.postgres.PostgresSaver):
+
+```python
+from langgraph.store.postgres import PostgresStore
+
+with PostgresStore.from_conn_string("host=localhost port=5433 ...") as store:
+    store.setup()
+    store.put(("users", "123"), "prefs", {"theme": "dark"})
+```
+
+AGE graph tables, pgvector tables, and LangGraph store tables coexist in the same database.
+
+## Features
+
+| Component | Class | Description |
+|-----------|-------|-------------|
+| **Graph** | `AGEGraph` | GraphStore backed by Apache AGE. Cypher execution, schema introspection, GraphDocument upserts. |
+| **Vector** | `AGEVector` | VectorStore backed by pgvector. Cosine/L2/IP distance, HNSW & IVFFlat indexes, hybrid search (vector + full-text via RRF), MMR. |
+| **Chain** | `AGEGraphCypherQAChain` | LLM generates Cypher, executes against AGE, returns natural-language answer. |
+
+### Security
+
+- SQL identifier validation at construction (`validate_sql_identifier`)
+- Cypher identifier backtick-quoting for all 25 AGE reserved words (`escape_cypher_identifier`)
+- OpenCypher-standard string escaping with `''` doubling (`escape_cypher_string`)
+- `allow_dangerous_requests` gate on the QA chain
+- Double-quoted SQL table/index names throughout
+
+### langchain-neo4j API Compatibility
+
+| Feature | langchain-neo4j | langchain-age |
+|---------|----------------|---------------|
+| `from_existing_graph()` | `Neo4jVector.from_existing_graph()` | `AGEVector.from_existing_graph()` |
+| `from_existing_index()` | `Neo4jVector.from_existing_index()` | `AGEVector.from_existing_index()` |
+| `similarity_search_with_relevance_scores()` | Yes | Yes |
+| `as_retriever()` | Yes | Yes |
+| Hybrid search | Lucene full-text | PostgreSQL tsvector + RRF |
+| `include_types` / `exclude_types` | Yes | Yes |
+| `add_graph_documents()` | Yes | Yes |
+| Context manager | Yes | Yes |
+| Batch insert | `UNWIND ... IN TRANSACTIONS OF 1000 ROWS` | `executemany` with `batch_size=1000` |
+
+## AGE vs Neo4j
 
 | | Neo4j | Apache AGE |
 |---|---|---|
-| Cypher execution | Direct Cypher protocol | Wrapped in SQL: `SELECT * FROM cypher('graph', $$ ... $$) AS (col agtype)` |
-| Connection | Bolt protocol (`neo4j://`) | PostgreSQL DSN / URI |
-| Vector search | Native vector index | pgvector extension |
-| APOC procedures | Available | **Not available** |
-| Data type | Native graph types | `agtype` (superset of JSON) |
+| Cypher execution | Bolt protocol | SQL-wrapped: `SELECT * FROM cypher(...)` |
+| Connection | `neo4j://` | PostgreSQL DSN |
+| Vector search | Native index | pgvector extension |
+| APOC | Available | Not available |
+| Data types | Native graph | `agtype` (JSON superset) |
+| Parameterised Cypher | Yes (`$param`) | Not supported (values inlined) |
 
-`langchain-age` handles the SQL wrapping automatically — you write plain Cypher.
-
----
+`langchain-age` handles SQL wrapping automatically — you write plain Cypher.
 
 ## Running Tests
 
 ```bash
-# Unit tests (no DB required)
+# Unit tests (no DB required) — 65 tests
 pytest tests/unit/
 
-# Integration tests (requires Docker container)
-export LANGCHAIN_AGE_TEST_DSN="host=localhost port=5432 dbname=langchain_age user=langchain password=langchain"
+# Integration tests (requires Docker container) — 43 tests
+export LANGCHAIN_AGE_TEST_DSN="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain"
 pytest tests/integration/
 ```
-
----
 
 ## Project Structure
 
 ```
 langchain-age/
-├── docker/                    # PostgreSQL + AGE + pgvector container
+├── docker/                          # PG18 + AGE + pgvector container
 │   ├── Dockerfile
 │   ├── docker-compose.yml
-│   └── init/
-│       └── 01_init_extensions.sql
+│   └── init/01_init_extensions.sql
 ├── langchain_age/
-│   ├── __init__.py
+│   ├── __init__.py                  # Lazy imports (3-mode support)
 │   ├── graphs/
-│   │   └── age_graph.py       # AGEGraph (GraphStore)
+│   │   └── age_graph.py             # AGEGraph (GraphStore)
 │   ├── vectorstores/
-│   │   └── age_vector.py      # AGEVector (VectorStore)
+│   │   └── age_vector.py            # AGEVector (VectorStore)
 │   ├── chains/
-│   │   └── graph_cypher_qa_chain.py  # AGEGraphCypherQAChain
+│   │   └── graph_cypher_qa_chain.py # AGEGraphCypherQAChain
 │   └── utils/
-│       ├── agtype.py          # agtype ↔ Python conversion
-│       └── cypher.py          # Cypher wrapping & validation
+│       ├── agtype.py                # Vertex/Edge/Path → dict conversion
+│       └── cypher.py                # SQL wrapping, escaping, validation
 ├── tests/
-│   ├── unit/                  # Pure Python, no DB
-│   └── integration/           # Requires live DB
-├── examples/
-│   ├── 01_basic_graph_qa.py
-│   ├── 02_vector_search.py
-│   └── 03_graph_rag.py        # Combined GraphRAG pattern
+│   ├── unit/                        # 65 tests, no DB
+│   └── integration/                 # 43 tests, live DB
 └── pyproject.toml
 ```
 
----
+## Python Support
+
+Tested on Python 3.10, 3.11, 3.12, 3.13, 3.14.
 
 ## License
 
