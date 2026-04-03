@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,16 +60,12 @@ jobs:
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v
 
-  build:
+  build-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install build
-      - run: python -m build
-      - name: Verify wheel
-        run: |
-          pip install dist/*.whl
-          python -c "import langchain_age; print(langchain_age.__version__)"
+      - name: Build and smoke test (base + vector + graph)
+        run: bash scripts/smoke_build.sh

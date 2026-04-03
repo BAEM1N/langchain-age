@@ -529,6 +529,50 @@ class TestAGEGraphCypherQAChain:
 
 
 # ─────────────────────────────────────────────────────────────────
+# 4b. Chain verbose/callback regression tests
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestChainVerboseCallback:
+    """Regression tests for verbose field and run_manager callback paths."""
+
+    def _make_chain(self, graph, **kwargs):
+        from langchain_core.runnables import RunnableLambda
+
+        from langchain_age import AGEGraphCypherQAChain
+
+        return AGEGraphCypherQAChain(
+            graph=graph,
+            cypher_generation_chain=RunnableLambda(
+                lambda _: "MATCH (n:Person) RETURN n.name AS name LIMIT 3"
+            ),
+            qa_chain=RunnableLambda(lambda _: "Answer."),
+            allow_dangerous_requests=True,
+            **kwargs,
+        )
+
+    def test_verbose_field_exists(self, graph):
+        """verbose field should be defined and default to False."""
+        chain = self._make_chain(graph)
+        assert hasattr(chain, "verbose")
+        assert chain.verbose is False
+
+    def test_verbose_true_does_not_crash(self, graph):
+        """verbose=True should not raise AttributeError."""
+        graph.refresh_schema()
+        chain = self._make_chain(graph, verbose=True)
+        assert chain.verbose is True
+        result = chain.invoke({"query": "test"})
+        assert "result" in result
+
+    def test_verbose_false_invoke(self, graph):
+        """verbose=False invoke should work identically."""
+        chain = self._make_chain(graph, verbose=False)
+        result = chain.invoke({"query": "test"})
+        assert "result" in result
+
+
+# ─────────────────────────────────────────────────────────────────
 # 5. Extended VectorStore methods
 # ─────────────────────────────────────────────────────────────────
 
