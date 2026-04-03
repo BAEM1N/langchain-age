@@ -152,6 +152,16 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 
 `langchain-age` handles SQL wrapping automatically — you write plain Cypher.
 
+## Notebooks
+
+| Notebook | Description |
+|----------|-------------|
+| [01_graph.ipynb](notebooks/01_graph.ipynb) | AGEGraph: Cypher CRUD, schema, GraphDocument |
+| [02_vector.ipynb](notebooks/02_vector.ipynb) | AGEVector: similarity, hybrid, MMR, filters, HNSW |
+| [03_graph_vector.ipynb](notebooks/03_graph_vector.ipynb) | GraphRAG: from_existing_graph, QA chain, LangGraph Store |
+
+API 키 없이 동작하는 DemoEmbeddings로 작성. OpenAI/HuggingFace 임베딩으로 교체 가능.
+
 ## Running Tests
 
 ```bash
