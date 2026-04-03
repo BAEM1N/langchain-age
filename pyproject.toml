@@ -7,7 +7,7 @@ name = "langchain-age"
 version = "0.0.6"
 description = "LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL"
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 keywords = ["langchain", "apache-age", "pgvector", "graph-database", "postgresql", "rag", "graphrag"]
 classifiers = [

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff mypy
+      - run: ruff check langchain_age/
+      - run: mypy langchain_age/ --ignore-missing-imports
+
+  test-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/unit/ -v
+
+  test-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: apache/age:latest
+        env:
+          POSTGRES_USER: langchain
+          POSTGRES_PASSWORD: langchain
+          POSTGRES_DB: langchain_age
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U langchain"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LANGCHAIN_AGE_TEST_DSN: "host=localhost port=5432 dbname=langchain_age user=langchain password=langchain"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/integration/ -v
