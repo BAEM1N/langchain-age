@@ -1,0 +1,18 @@
+This is langchain-age, a LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL.
+
+Key classes: AGEGraph, AGEVector, AGEGraphCypherQAChain
+Import: from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
+
+AGE Cypher rules:
+- No APOC procedures
+- Always alias RETURN: RETURN n.name AS name
+- Backtick reserved words: n.`desc`, n.`order`
+- No $param binding — use %s with params=("value",)
+- UNWIND works for batch operations
+
+Performance:
+- 1-3 hop traversal: graph.query() with Cypher
+- 4+ hop: graph.traverse() uses WITH RECURSIVE (10-22x faster)
+
+Linting: ruff + mypy, _vendor/ excluded
+Tests: pytest tests/unit/ (no DB) + pytest tests/integration/ (Docker)
