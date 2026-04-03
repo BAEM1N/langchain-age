@@ -221,7 +221,7 @@ class AGEVector(VectorStore):
             meta = dict(meta)  # copy — do not mutate caller's dict
             age_node_id = meta.pop("age_node_id", None)
             param_rows.append(
-                (doc_id, text, self._to_vec(emb), psycopg.types.json.Jsonb(meta), age_node_id)
+                (doc_id, text, self._to_vec(emb), psycopg.types.json.Jsonb(meta), age_node_id)  # type: ignore[attr-defined]
             )
 
         # Use double-quoted table name — langchain-postgres convention.
@@ -262,7 +262,7 @@ class AGEVector(VectorStore):
             **kwargs,
         )
 
-    def delete(self, ids: list[str], **kwargs: Any) -> bool | None:
+    def delete(self, ids: list[str] | None = None, **kwargs: Any) -> bool | None:  # type: ignore[override]
         """Delete documents by ID."""
         try:
             with self._conn.cursor() as cur:
@@ -276,7 +276,7 @@ class AGEVector(VectorStore):
             raise
         return True
 
-    def get_by_ids(self, ids: list[str], **kwargs: Any) -> list[Document]:
+    def get_by_ids(self, ids: list[str], /, **kwargs: Any) -> list[Document]:  # type: ignore[override]
         """Fetch documents by their IDs."""
         try:
             with self._conn.cursor() as cur:
@@ -664,7 +664,7 @@ class AGEVector(VectorStore):
             lambda: self.similarity_search_by_vector(embedding, k=k, filter=filter),
         )
 
-    async def adelete(self, ids: list[str], **kwargs: Any) -> bool | None:
+    async def adelete(self, ids: list[str] | None = None, **kwargs: Any) -> bool | None:  # type: ignore[override]
         """Async delete."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self.delete(ids))

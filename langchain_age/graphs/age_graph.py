@@ -44,8 +44,8 @@ from langchain_age.utils.cypher import (
 )
 
 # psycopg3 error classes for retry logic
-_RETRIABLE_ERRORS: tuple[type, ...] = ()
-_CONNECTION_ERRORS: tuple[type, ...] = ()
+_RETRIABLE_ERRORS: tuple[type[BaseException], ...] = ()
+_CONNECTION_ERRORS: tuple[type[BaseException], ...] = ()
 try:
     from psycopg import errors as _pgerr
     _RETRIABLE_ERRORS = (_pgerr.SerializationFailure, _pgerr.DeadlockDetected)
@@ -184,7 +184,7 @@ class AGEGraph(GraphStore):
         # mogrify-based pseudo parameter binding
         if params is not None:
             with self._conn.cursor() as cur:
-                query = cur.mogrify(query, params)
+                query = cur.mogrify(query, params)  # type: ignore[attr-defined]
 
         aliases = extract_cypher_return_aliases(query)
         sql = wrap_cypher_query(
@@ -199,7 +199,7 @@ class AGEGraph(GraphStore):
         self, sql: str, aliases: list[str]
     ) -> list[dict[str, Any]]:
         """Execute SQL with retry logic for retriable errors."""
-        last_exc: Exception | None = None
+        last_exc: BaseException | None = None
 
         for attempt in range(self._max_retries):
             try:
@@ -310,7 +310,7 @@ class AGEGraph(GraphStore):
                 )
 
             # --- Relationships (grouped by type) ---
-            rels_by_type: dict[str, list[dict[str, Any]]] = {}
+            rels_by_type: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
             for rel in doc.relationships:
                 key = (rel.source.type, rel.type, rel.target.type)
                 rels_by_type.setdefault(key, []).append({
@@ -319,7 +319,8 @@ class AGEGraph(GraphStore):
                     **(rel.properties or {}),
                 })
 
-            for (src_type, rel_type, tgt_type), rel_dicts in rels_by_type.items():
+            for key, rel_dicts in rels_by_type.items():
+                src_type, rel_type, tgt_type = key
                 sl = escape_cypher_identifier(src_type)
                 rl = escape_cypher_identifier(rel_type)
                 tl = escape_cypher_identifier(tgt_type)
@@ -589,7 +590,8 @@ class AGEGraph(GraphStore):
                 "SELECT count(*) FROM ag_catalog.ag_graph WHERE name = %s;",
                 (self.graph_name,),
             )
-            (count,) = cur.fetchone()
+            row = cur.fetchone()
+            count = row[0] if row else 0
             if count == 0:
                 cur.execute("SELECT create_graph(%s);", (self.graph_name,))
         self._conn.commit()

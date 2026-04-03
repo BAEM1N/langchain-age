@@ -148,7 +148,7 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 | Vector search | Native index | pgvector extension |
 | APOC | Available | Not available |
 | Data types | Native graph | `agtype` (JSON superset) |
-| Parameterised Cypher | Yes (`$param`) | Not supported (values inlined) |
+| Parameterised Cypher | Yes (`$param`) | mogrify-based (`%s` placeholders) |
 
 `langchain-age` handles SQL wrapping automatically — you write plain Cypher.
 
@@ -159,9 +159,8 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 | [01_graph.ipynb](notebooks/01_graph.ipynb) | AGEGraph: Cypher CRUD, schema, GraphDocument |
 | [02_vector.ipynb](notebooks/02_vector.ipynb) | AGEVector: similarity, hybrid, MMR, filters, HNSW |
 | [03_graph_vector.ipynb](notebooks/03_graph_vector.ipynb) | GraphRAG: from_existing_graph, QA chain |
-| [04_neo4j_vs_age.ipynb](notebooks/04_neo4j_vs_age.ipynb) | **Neo4j vs AGE 병렬 비교** — 동일 작업을 나란히 실행 |
 
-01은 API 키 불필요. 02~04는 OpenAI API 키를 `getpass`로 입력.
+01 requires no API key. 02–03 use OpenAI via `getpass`.
 
 ## Running Tests
 
@@ -169,7 +168,7 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 # Unit tests (no DB required) — 65 tests
 pytest tests/unit/
 
-# Integration tests (requires Docker container) — 43 tests
+# Integration tests (requires Docker container) — 50 tests
 export LANGCHAIN_AGE_TEST_DSN="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain"
 pytest tests/integration/
 ```
@@ -194,9 +193,13 @@ langchain-age/
 │       ├── agtype.py                # Vertex/Edge/Path → dict conversion
 │       └── cypher.py                # SQL wrapping, escaping, validation
 ├── tests/
+│   ├── conftest.py                  # Auto-skip integration when DSN unset
 │   ├── unit/                        # 65 tests, no DB
-│   └── integration/                 # 43 tests, live DB
-└── pyproject.toml
+│   └── integration/                 # 50 tests, live DB
+├── pyproject.toml
+├── LICENSE                          # MIT
+├── CHANGELOG.md                     # Version history
+└── .github/workflows/ci.yml        # Lint + unit (3.10–3.13) + integration
 ```
 
 ## Python Support

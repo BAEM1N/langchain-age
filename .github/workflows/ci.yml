@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install ruff mypy
-      - run: ruff check langchain_age/
+      - run: ruff check langchain_age/ tests/
       - run: mypy langchain_age/ --ignore-missing-imports
 
   test-unit:
@@ -33,26 +33,43 @@ jobs:
 
   test-integration:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: apache/age:latest
-        env:
-          POSTGRES_USER: langchain
-          POSTGRES_PASSWORD: langchain
-          POSTGRES_DB: langchain_age
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U langchain"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       LANGCHAIN_AGE_TEST_DSN: "host=localhost port=5432 dbname=langchain_age user=langchain password=langchain"
     steps:
       - uses: actions/checkout@v4
+
+      # Build and start the same Docker image used locally (AGE + pgvector)
+      - name: Build and start DB container
+        run: |
+          docker compose -f docker/docker-compose.yml up -d --build
+          # Wait for healthy
+          for i in $(seq 1 30); do
+            if docker compose -f docker/docker-compose.yml exec -T db pg_isready -U langchain; then
+              break
+            fi
+            sleep 2
+          done
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: pytest tests/integration/ -v
+
+      - name: Stop DB container
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build
+      - run: python -m build
+      - name: Verify wheel
+        run: |
+          pip install dist/*.whl
+          python -c "import langchain_age; print(langchain_age.__version__)"

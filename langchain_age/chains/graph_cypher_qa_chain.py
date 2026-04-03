@@ -122,6 +122,7 @@ class AGEGraphCypherQAChain(RunnableSerializable):
     input_key: str = "query"
     output_key: str = "result"
     top_k: int = 10
+    verbose: bool = False
     return_intermediate_steps: bool = False
     return_direct: bool = False
     include_types: list[str] = []
@@ -353,4 +354,4 @@ class AGEGraphCypherQAChain(RunnableSerializable):
 
     def run(self, query: str, **kwargs: Any) -> str:
         """Convenience single-string interface."""
-        return self.invoke({self.input_key: query})[self.output_key]
+        return str(self.invoke({self.input_key: query})[self.output_key])

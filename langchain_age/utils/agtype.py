@@ -69,7 +69,7 @@ def agobj_to_dict(obj: Any) -> AGEPythonValue:
         return [agobj_to_dict(v) for v in obj]
     if isinstance(obj, dict):
         return {k: agobj_to_dict(v) for k, v in obj.items()}
-    return obj
+    return obj  # type: ignore[no-any-return]
 
 
 def agtype_to_python(value: Any) -> AGEPythonValue:
@@ -97,7 +97,7 @@ def agtype_to_python(value: Any) -> AGEPythonValue:
     cleaned = _SUFFIX_RE.sub("", value.strip())
 
     try:
-        return json.loads(cleaned)
+        return json.loads(cleaned)  # type: ignore[no-any-return]
     except (json.JSONDecodeError, ValueError):
         pass
     return cleaned
