@@ -175,7 +175,7 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 # Unit tests (no DB required) — 65 tests
 pytest tests/unit/
 
-# Integration tests (requires Docker container) — 50 tests
+# Integration tests (requires Docker container) — 53 tests
 export LANGCHAIN_AGE_TEST_DSN="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain"
 pytest tests/integration/
 ```
@@ -202,7 +202,7 @@ langchain-age/
 ├── tests/
 │   ├── conftest.py                  # Auto-skip integration when DSN unset
 │   ├── unit/                        # 65 tests, no DB
-│   └── integration/                 # 50 tests, live DB
+│   └── integration/                 # 53 tests, live DB
 ├── pyproject.toml
 ├── LICENSE                          # MIT
 ├── CHANGELOG.md                     # Version history
