@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Union
+from typing import Any
 
 try:
     from age import Edge, Path, Vertex
@@ -21,7 +21,7 @@ except ImportError:
     Vertex = Edge = Path = None  # type: ignore[assignment,misc]
 
 # Type alias for the return values of agobj_to_dict / agtype_to_python.
-AGEPythonValue = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
+AGEPythonValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 def agobj_to_dict(obj: Any) -> AGEPythonValue:

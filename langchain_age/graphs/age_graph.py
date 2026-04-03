@@ -17,13 +17,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 try:
-    from age import setUpAge
     import psycopg
+    from age import setUpAge
     from psycopg.client_cursor import ClientCursor
 except ImportError as e:
     raise ImportError(
@@ -44,8 +44,8 @@ from langchain_age.utils.cypher import (
 )
 
 # psycopg3 error classes for retry logic
-_RETRIABLE_ERRORS: Tuple[type, ...] = ()
-_CONNECTION_ERRORS: Tuple[type, ...] = ()
+_RETRIABLE_ERRORS: tuple[type, ...] = ()
+_CONNECTION_ERRORS: tuple[type, ...] = ()
 try:
     from psycopg import errors as _pgerr
     _RETRIABLE_ERRORS = (_pgerr.SerializationFailure, _pgerr.DeadlockDetected)
@@ -91,12 +91,12 @@ class AGEGraph(GraphStore):
         connection_string: str,
         graph_name: str,
         *,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         refresh_schema: bool = True,
         sanitize: bool = True,
         enhanced_schema: bool = False,
-        include_types: Optional[List[str]] = None,
-        exclude_types: Optional[List[str]] = None,
+        include_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         max_retries: int = _DEFAULT_MAX_RETRIES,
     ) -> None:
         self._conn_string = connection_string
@@ -113,7 +113,7 @@ class AGEGraph(GraphStore):
         self._ensure_graph()
 
         self.schema: str = ""
-        self.structured_schema: Dict[str, Any] = {}
+        self.structured_schema: dict[str, Any] = {}
 
         if refresh_schema:
             self.refresh_schema()
@@ -152,14 +152,14 @@ class AGEGraph(GraphStore):
         return self.schema
 
     @property
-    def get_structured_schema(self) -> Dict[str, Any]:
+    def get_structured_schema(self) -> dict[str, Any]:
         return self.structured_schema
 
     def query(
         self,
         query: str,
-        params: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
+        params: Any | None = None,
+    ) -> list[dict[str, Any]]:
         """Execute a Cypher query and return results as plain Python dicts.
 
         Args:
@@ -196,10 +196,10 @@ class AGEGraph(GraphStore):
         return self._execute_with_retry(sql, aliases)
 
     def _execute_with_retry(
-        self, sql: str, aliases: List[str]
-    ) -> List[Dict[str, Any]]:
+        self, sql: str, aliases: list[str]
+    ) -> list[dict[str, Any]]:
         """Execute SQL with retry logic for retriable errors."""
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
 
         for attempt in range(self._max_retries):
             try:
@@ -226,7 +226,7 @@ class AGEGraph(GraphStore):
             return self._execute_sql(sql)
         return []
 
-    def _execute_sql(self, sql: str) -> List[Dict[str, Any]]:
+    def _execute_sql(self, sql: str) -> list[dict[str, Any]]:
         """Execute a single SQL statement and return parsed results."""
         with self._conn.cursor() as cur:
             if self._timeout:
@@ -249,8 +249,8 @@ class AGEGraph(GraphStore):
 
         results = []
         for row in rows:
-            record: Dict[str, Any] = {}
-            for col, val in zip(col_names, row):
+            record: dict[str, Any] = {}
+            for col, val in zip(col_names, row, strict=False):
                 converted = agobj_to_dict(val)
                 record[col] = (
                     self._sanitize_value(converted) if self._sanitize else converted
@@ -284,7 +284,7 @@ class AGEGraph(GraphStore):
 
     def add_graph_documents(
         self,
-        graph_documents: List[GraphDocument],
+        graph_documents: list[GraphDocument],
         include_source: bool = False,
     ) -> None:
         """Upsert ``GraphDocument`` objects using UNWIND batch pattern.
@@ -294,7 +294,7 @@ class AGEGraph(GraphStore):
         """
         for doc in graph_documents:
             # --- Batch nodes by label ---
-            nodes_by_label: Dict[str, List[Dict[str, Any]]] = {}
+            nodes_by_label: dict[str, list[dict[str, Any]]] = {}
             for node in doc.nodes:
                 nodes_by_label.setdefault(node.type, []).append(
                     {"id": str(node.id), **(node.properties or {})}
@@ -310,7 +310,7 @@ class AGEGraph(GraphStore):
                 )
 
             # --- Relationships (grouped by type) ---
-            rels_by_type: Dict[str, List[Dict[str, Any]]] = {}
+            rels_by_type: dict[str, list[dict[str, Any]]] = {}
             for rel in doc.relationships:
                 key = (rel.source.type, rel.type, rel.target.type)
                 rels_by_type.setdefault(key, []).append({
@@ -370,13 +370,13 @@ class AGEGraph(GraphStore):
     def traverse(
         self,
         start_label: str,
-        start_filter: Dict[str, Any],
+        start_filter: dict[str, Any],
         edge_label: str,
         max_depth: int,
         *,
         direction: str = "outgoing",
         return_properties: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Traverse the graph using PostgreSQL ``WITH RECURSIVE``.
 
         10~22x faster than Cypher ``*N`` variable-length paths because
@@ -413,7 +413,7 @@ class AGEGraph(GraphStore):
         where_parts = []
         where_params: list = []
         for k, v in start_filter.items():
-            where_parts.append(f"n.properties::text::jsonb->>%s = %s")
+            where_parts.append("n.properties::text::jsonb->>%s = %s")
             where_params.extend([k, str(v)])
         where_clause = " AND ".join(where_parts) if where_parts else "TRUE"
 
@@ -489,7 +489,7 @@ class AGEGraph(GraphStore):
 
         results = []
         for row in rows:
-            record = dict(zip(col_names, row))
+            record = dict(zip(col_names, row, strict=False))
             # Convert properties from jsonb dict if present
             if "properties" in record and record["properties"]:
                 record["properties"] = dict(record["properties"])
@@ -499,11 +499,11 @@ class AGEGraph(GraphStore):
     def _traverse_both(
         self,
         start_label: str,
-        start_filter: Dict[str, Any],
+        start_filter: dict[str, Any],
         edge_label: str,
         max_depth: int,
         return_properties: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Bidirectional traversal — UNION of outgoing and incoming."""
         out = self.traverse(
             start_label, start_filter, edge_label, max_depth,
@@ -594,7 +594,7 @@ class AGEGraph(GraphStore):
                 cur.execute("SELECT create_graph(%s);", (self.graph_name,))
         self._conn.commit()
 
-    def _fetch_labels_with_kind(self) -> List[Tuple[str, str]]:
+    def _fetch_labels_with_kind(self) -> list[tuple[str, str]]:
         """Fetch all (label_name, kind) pairs, filtering internal labels."""
         with self._conn.cursor() as cur:
             cur.execute(
@@ -608,7 +608,7 @@ class AGEGraph(GraphStore):
             )
             return [(row[0], row[1]) for row in cur.fetchall()]
 
-    def _fetch_labels(self, kind: str) -> List[str]:
+    def _fetch_labels(self, kind: str) -> list[str]:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
@@ -621,21 +621,21 @@ class AGEGraph(GraphStore):
             )
             return [row[0] for row in cur.fetchall()]
 
-    def _filter_labels(self, labels: List[str]) -> List[str]:
+    def _filter_labels(self, labels: list[str]) -> list[str]:
         if self._include_types:
             labels = [l for l in labels if l in self._include_types]
         if self._exclude_types:
             labels = [l for l in labels if l not in self._exclude_types]
         return labels
 
-    def _fetch_all_props(self, labels: List[str]) -> Dict[str, List[str]]:
+    def _fetch_all_props(self, labels: list[str]) -> dict[str, list[str]]:
         """Extract property keys for all *labels* via ag_catalog SQL.
 
         Queries the underlying PostgreSQL table for each label
         (``graph_name."LabelName"``) and extracts JSONB keys from the
         ``properties`` column.  Uses ``agtype::text::jsonb`` conversion.
         """
-        result: Dict[str, List[str]] = {}
+        result: dict[str, list[str]] = {}
         for label in labels:
             try:
                 with self._conn.cursor() as cur:
@@ -659,8 +659,8 @@ class AGEGraph(GraphStore):
         self._conn.commit()
         return result
 
-    def _fetch_relationships(self, edge_labels: List[str]) -> List[Dict[str, str]]:
-        triples: List[Dict[str, str]] = []
+    def _fetch_relationships(self, edge_labels: list[str]) -> list[dict[str, str]]:
+        triples: list[dict[str, str]] = []
         for label in edge_labels:
             escaped = escape_cypher_identifier(label)
             try:
@@ -701,7 +701,7 @@ class AGEGraph(GraphStore):
         self._conn.commit()
 
     @staticmethod
-    def _dicts_to_cypher_list(dicts: List[Dict[str, Any]]) -> str:
+    def _dicts_to_cypher_list(dicts: list[dict[str, Any]]) -> str:
         """Serialise a list of Python dicts to a Cypher list-of-maps literal.
 
         Used for ``UNWIND [{...}, {...}] AS row`` batch patterns.
@@ -712,7 +712,7 @@ class AGEGraph(GraphStore):
         return "[" + ", ".join(maps) + "]"
 
     @staticmethod
-    def _props_to_cypher(props: Dict[str, Any]) -> str:
+    def _props_to_cypher(props: dict[str, Any]) -> str:
         """Serialise a Python dict to a Cypher map literal."""
         if not props:
             return "{}"
@@ -747,9 +747,9 @@ class AGEGraph(GraphStore):
 
     @staticmethod
     def _build_schema_string(
-        node_props: Dict[str, List[str]],
-        edge_props: Dict[str, List[str]],
-        relationships: List[Dict[str, str]],
+        node_props: dict[str, list[str]],
+        edge_props: dict[str, list[str]],
+        relationships: list[dict[str, str]],
     ) -> str:
         lines = ["Node labels and properties:"]
         for label, props in node_props.items():

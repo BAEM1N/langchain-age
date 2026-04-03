@@ -32,14 +32,22 @@ __version__ = "0.0.6"
 
 if TYPE_CHECKING:
     from langchain_age.chains.graph_cypher_qa_chain import (
-        AGEGraphCypherQAChain as AGEGraphCypherQAChain,
         CYPHER_GENERATION_PROMPT as CYPHER_GENERATION_PROMPT,
+    )
+    from langchain_age.chains.graph_cypher_qa_chain import (
         QA_PROMPT as QA_PROMPT,
+    )
+    from langchain_age.chains.graph_cypher_qa_chain import (
+        AGEGraphCypherQAChain as AGEGraphCypherQAChain,
     )
     from langchain_age.graphs.age_graph import AGEGraph as AGEGraph
     from langchain_age.vectorstores.age_vector import (
         AGEVector as AGEVector,
+    )
+    from langchain_age.vectorstores.age_vector import (
         DistanceStrategy as DistanceStrategy,
+    )
+    from langchain_age.vectorstores.age_vector import (
         SearchType as SearchType,
     )
 

@@ -14,7 +14,7 @@ Only enable ``allow_dangerous_requests`` in trusted environments.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.output_parsers import StrOutputParser
@@ -124,8 +124,8 @@ class AGEGraphCypherQAChain(RunnableSerializable):
     top_k: int = 10
     return_intermediate_steps: bool = False
     return_direct: bool = False
-    include_types: List[str] = []
-    exclude_types: List[str] = []
+    include_types: list[str] = []
+    exclude_types: list[str] = []
     use_function_response: bool = False
     validate_cypher: bool = True
     allow_dangerous_requests: bool = False
@@ -142,12 +142,12 @@ class AGEGraphCypherQAChain(RunnableSerializable):
         llm: BaseLanguageModel,
         graph: AGEGraph,
         *,
-        cypher_llm: Optional[BaseLanguageModel] = None,
-        qa_llm: Optional[BaseLanguageModel] = None,
+        cypher_llm: BaseLanguageModel | None = None,
+        qa_llm: BaseLanguageModel | None = None,
         cypher_prompt: BasePromptTemplate = CYPHER_GENERATION_PROMPT,
         qa_prompt: BasePromptTemplate = QA_PROMPT,
-        include_types: Optional[List[str]] = None,
-        exclude_types: Optional[List[str]] = None,
+        include_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         validate_cypher: bool = True,
         allow_dangerous_requests: bool = False,
         **kwargs: Any,
@@ -221,8 +221,8 @@ class AGEGraphCypherQAChain(RunnableSerializable):
         return True
 
     def _call(
-        self, inputs: Dict[str, Any], run_manager: Optional[Any] = None
-    ) -> Dict[str, Any]:
+        self, inputs: dict[str, Any], run_manager: Any | None = None
+    ) -> dict[str, Any]:
         if not self.allow_dangerous_requests:
             raise ValueError(
                 "Set allow_dangerous_requests=True to use AGEGraphCypherQAChain."
@@ -300,7 +300,7 @@ class AGEGraphCypherQAChain(RunnableSerializable):
                 config={"callbacks": callbacks},
             )
 
-        out: Dict[str, Any] = {self.output_key: final}
+        out: dict[str, Any] = {self.output_key: final}
         if self.return_intermediate_steps:
             out["intermediate_steps"] = [
                 {"query": cypher_query},
@@ -312,7 +312,7 @@ class AGEGraphCypherQAChain(RunnableSerializable):
         self,
         question: str,
         cypher: str,
-        db_results: List[Dict[str, Any]],
+        db_results: list[dict[str, Any]],
         callbacks: Any,
     ) -> str:
         """Pass DB results as a tool/function message for models that support it."""
@@ -345,10 +345,10 @@ class AGEGraphCypherQAChain(RunnableSerializable):
 
     def invoke(
         self,
-        input: Dict[str, Any],
-        config: Optional[Any] = None,
+        input: dict[str, Any],
+        config: Any | None = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return self._call(input)
 
     def run(self, query: str, **kwargs: Any) -> str:

@@ -26,8 +26,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +107,10 @@ class AGEVector(VectorStore):
         distance_strategy: DistanceStrategy = DistanceStrategy.COSINE,
         search_type: SearchType = SearchType.VECTOR,
         pre_delete_collection: bool = False,
-        relevance_score_fn: Optional[Callable[[float], float]] = None,
-        age_graph_name: Optional[str] = None,
-        retrieval_query: Optional[str] = None,
-        embedding_dimension: Optional[int] = None,
+        relevance_score_fn: Callable[[float], float] | None = None,
+        age_graph_name: str | None = None,
+        retrieval_query: str | None = None,
+        embedding_dimension: int | None = None,
         batch_size: int = _DEFAULT_BATCH_SIZE,
     ) -> None:
         # Validate collection_name early — mirrors langchain-postgres pattern.
@@ -176,9 +177,9 @@ class AGEVector(VectorStore):
         self,
         query: str,
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Tuple[Document, float]]:
+    ) -> list[tuple[Document, float]]:
         """Return documents with relevance scores normalised to [0, 1].
 
         Unlike ``similarity_search_with_score`` which returns raw distances,
@@ -196,10 +197,10 @@ class AGEVector(VectorStore):
     def add_texts(
         self,
         texts: Iterable[str],
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-        ids: Optional[List[str]] = None,
+        metadatas: list[dict[str, Any]] | None = None,
+        ids: list[str] | None = None,
         **kwargs: Any,
-    ) -> List[str]:
+    ) -> list[str]:
         """Embed *texts* and store them.
 
         Uses ``executemany`` for batch INSERT (one round-trip per
@@ -216,7 +217,7 @@ class AGEVector(VectorStore):
 
         # Build parameter rows — extract age_node_id from metadata in-place.
         param_rows = []
-        for doc_id, text, emb, meta in zip(ids, texts_list, embeddings, metadatas):
+        for doc_id, text, emb, meta in zip(ids, texts_list, embeddings, metadatas, strict=False):
             meta = dict(meta)  # copy — do not mutate caller's dict
             age_node_id = meta.pop("age_node_id", None)
             param_rows.append(
@@ -249,10 +250,10 @@ class AGEVector(VectorStore):
 
     def add_documents(
         self,
-        documents: List[Document],
-        ids: Optional[List[str]] = None,
+        documents: list[Document],
+        ids: list[str] | None = None,
         **kwargs: Any,
-    ) -> List[str]:
+    ) -> list[str]:
         """Embed and store ``Document`` objects."""
         return self.add_texts(
             [d.page_content for d in documents],
@@ -261,7 +262,7 @@ class AGEVector(VectorStore):
             **kwargs,
         )
 
-    def delete(self, ids: List[str], **kwargs: Any) -> Optional[bool]:
+    def delete(self, ids: list[str], **kwargs: Any) -> bool | None:
         """Delete documents by ID."""
         try:
             with self._conn.cursor() as cur:
@@ -275,7 +276,7 @@ class AGEVector(VectorStore):
             raise
         return True
 
-    def get_by_ids(self, ids: List[str], **kwargs: Any) -> List[Document]:
+    def get_by_ids(self, ids: list[str], **kwargs: Any) -> list[Document]:
         """Fetch documents by their IDs."""
         try:
             with self._conn.cursor() as cur:
@@ -297,9 +298,9 @@ class AGEVector(VectorStore):
         self,
         query: str,
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Document]:
+    ) -> list[Document]:
         """Return *k* most similar documents."""
         return [
             doc
@@ -310,9 +311,9 @@ class AGEVector(VectorStore):
         self,
         query: str,
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Tuple[Document, float]]:
+    ) -> list[tuple[Document, float]]:
         """Return *k* most similar documents with distance scores."""
         embedding = self.embedding_function.embed_query(query)
         if self.search_type == SearchType.HYBRID:
@@ -321,11 +322,11 @@ class AGEVector(VectorStore):
 
     def similarity_search_by_vector(
         self,
-        embedding: List[float],
+        embedding: list[float],
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Document]:
+    ) -> list[Document]:
         """Search by pre-computed embedding vector."""
         return [
             doc
@@ -336,11 +337,11 @@ class AGEVector(VectorStore):
 
     def similarity_search_by_vector_with_score(
         self,
-        embedding: List[float],
+        embedding: list[float],
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Tuple[Document, float]]:
+    ) -> list[tuple[Document, float]]:
         """Search by vector and return documents with raw distance scores."""
         where_clause, where_params = self._build_filter_clause(filter)
         sql = f"""
@@ -366,9 +367,9 @@ class AGEVector(VectorStore):
         k: int = 4,
         fetch_k: int = 20,
         lambda_mult: float = 0.5,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Document]:
+    ) -> list[Document]:
         """Return diverse documents via Maximal Marginal Relevance.
 
         Reuses the stored embedding vectors from the DB (fetched alongside the
@@ -427,10 +428,10 @@ class AGEVector(VectorStore):
     def _hybrid_search_with_score(
         self,
         query: str,
-        embedding: List[float],
+        embedding: list[float],
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
-    ) -> List[Tuple[Document, float]]:
+        filter: dict[str, Any] | None = None,
+    ) -> list[tuple[Document, float]]:
         """Combine vector similarity and PostgreSQL full-text via RRF (k=60)."""
         where_clause, where_params = self._build_filter_clause(filter)
         fetch_k = k * 4
@@ -452,7 +453,7 @@ class AGEVector(VectorStore):
                    ) AS rn_fts
             FROM {tbl}
             WHERE fts @@ plainto_tsquery('english', %s)
-            {('AND ' + where_clause.lstrip('WHERE ')) if where_clause else ''}
+            {('AND ' + where_clause.removeprefix('WHERE ')) if where_clause else ''}
             LIMIT %s
         """
         rrf_sql = f"""
@@ -492,10 +493,10 @@ class AGEVector(VectorStore):
 
     @classmethod
     def from_texts(
-        cls: Type[AGEVector],
-        texts: List[str],
+        cls: type[AGEVector],
+        texts: list[str],
         embedding: Embeddings,
-        metadatas: Optional[List[Dict[str, Any]]] = None,
+        metadatas: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> AGEVector:
         """Create a store and populate it with *texts*."""
@@ -505,8 +506,8 @@ class AGEVector(VectorStore):
 
     @classmethod
     def from_documents(
-        cls: Type[AGEVector],
-        documents: List[Document],
+        cls: type[AGEVector],
+        documents: list[Document],
         embedding: Embeddings,
         **kwargs: Any,
     ) -> AGEVector:
@@ -517,7 +518,7 @@ class AGEVector(VectorStore):
 
     @classmethod
     def from_existing_index(
-        cls: Type[AGEVector],
+        cls: type[AGEVector],
         embedding: Embeddings,
         connection_string: str,
         collection_name: str = _DEFAULT_COLLECTION,
@@ -533,12 +534,12 @@ class AGEVector(VectorStore):
 
     @classmethod
     def from_existing_graph(
-        cls: Type[AGEVector],
+        cls: type[AGEVector],
         embedding: Embeddings,
         connection_string: str,
         graph_name: str,
         node_label: str,
-        text_node_properties: List[str],
+        text_node_properties: list[str],
         embedding_node_property: str = "embedding",
         collection_name: str = _DEFAULT_COLLECTION,
         **kwargs: Any,
@@ -579,7 +580,7 @@ class AGEVector(VectorStore):
             f"RETURN n AS node_obj, {prop_returns}"
         )
 
-        docs: List[Document] = []
+        docs: list[Document] = []
         for row in rows:
             parts = [
                 str(row[f"prop_{p}"])
@@ -614,10 +615,10 @@ class AGEVector(VectorStore):
     async def aadd_texts(
         self,
         texts: Iterable[str],
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-        ids: Optional[List[str]] = None,
+        metadatas: list[dict[str, Any]] | None = None,
+        ids: list[str] | None = None,
         **kwargs: Any,
-    ) -> List[str]:
+    ) -> list[str]:
         """Async version of ``add_texts``."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -626,10 +627,10 @@ class AGEVector(VectorStore):
 
     async def aadd_documents(
         self,
-        documents: List[Document],
-        ids: Optional[List[str]] = None,
+        documents: list[Document],
+        ids: list[str] | None = None,
         **kwargs: Any,
-    ) -> List[str]:
+    ) -> list[str]:
         """Async version of ``add_documents``."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -640,9 +641,9 @@ class AGEVector(VectorStore):
         self,
         query: str,
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Document]:
+    ) -> list[Document]:
         """Async similarity search."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -651,11 +652,11 @@ class AGEVector(VectorStore):
 
     async def asimilarity_search_by_vector(
         self,
-        embedding: List[float],
+        embedding: list[float],
         k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
+        filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> List[Document]:
+    ) -> list[Document]:
         """Async vector similarity search."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -663,7 +664,7 @@ class AGEVector(VectorStore):
             lambda: self.similarity_search_by_vector(embedding, k=k, filter=filter),
         )
 
-    async def adelete(self, ids: List[str], **kwargs: Any) -> Optional[bool]:
+    async def adelete(self, ids: list[str], **kwargs: Any) -> bool | None:
         """Async delete."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self.delete(ids))
@@ -723,11 +724,11 @@ class AGEVector(VectorStore):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_vec(embedding: List[float]) -> "np.ndarray":
+    def _to_vec(embedding: list[float]) -> np.ndarray:
         """Convert a Python list to numpy float32 array (required by pgvector)."""
         return np.array(embedding, dtype=np.float32)
 
-    def _detect_dimension(self) -> Optional[int]:
+    def _detect_dimension(self) -> int | None:
         """Auto-detect embedding dimension via a sample embed_query call."""
         if self._embedding_dimension:
             return self._embedding_dimension
@@ -787,9 +788,9 @@ class AGEVector(VectorStore):
             DistanceStrategy.MAX_INNER_PRODUCT: "vector_ip_ops",
         }[self.distance_strategy]
 
-    def _rows_to_docs(self, rows: list) -> List[Tuple[Document, float]]:
+    def _rows_to_docs(self, rows: list) -> list[tuple[Document, float]]:
         results = []
-        for row_id, content, meta, age_node_id, distance in rows:
+        for _row_id, content, meta, age_node_id, distance in rows:
             meta = dict(meta or {})
             if age_node_id:
                 meta["age_node_id"] = age_node_id
@@ -803,9 +804,9 @@ class AGEVector(VectorStore):
 
     @staticmethod
     def _build_filter_clause(
-        filter: Optional[Dict[str, Any]],
+        filter: dict[str, Any] | None,
         _depth: int = 0,
-    ) -> Tuple[str, List[Any]]:
+    ) -> tuple[str, list[Any]]:
         """Build a ``WHERE`` clause supporting MongoDB-style filter operators.
 
         Supported operators:
@@ -821,15 +822,15 @@ class AGEVector(VectorStore):
 
         MAX_DEPTH = 10
 
-        def _parse(f: Dict[str, Any], depth: int = 0) -> Tuple[str, List[Any]]:
+        def _parse(f: dict[str, Any], depth: int = 0) -> tuple[str, list[Any]]:
             if depth > MAX_DEPTH:
                 raise ValueError(
                     f"Filter nesting exceeds maximum depth of {MAX_DEPTH}. "
                     "Simplify the filter expression."
                 )
 
-            parts: List[str] = []
-            params: List[Any] = []
+            parts: list[str] = []
+            params: list[Any] = []
 
             if "$and" in f:
                 sub_parts, sub_params = [], []
@@ -851,7 +852,7 @@ class AGEVector(VectorStore):
                 params.extend(sub_params)
                 return " AND ".join(parts), params
 
-            _SCALAR_OPS: Dict[str, str] = {
+            _SCALAR_OPS: dict[str, str] = {
                 "$eq":    "metadata->>%s = %s",
                 "$ne":    "metadata->>%s != %s",
                 "$lt":    "(metadata->>%s)::numeric < %s",

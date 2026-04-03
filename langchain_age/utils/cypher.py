@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +131,7 @@ def validate_sql_identifier(name: str, context: str = "identifier") -> str:
 def wrap_cypher_query(
     graph_name: str,
     cypher: str,
-    columns: List[Tuple[str, str]],
+    columns: list[tuple[str, str]],
 ) -> str:
     """Wrap a Cypher statement in the AGE ``cypher()`` SQL function call.
 
@@ -175,7 +174,7 @@ def wrap_cypher_query(
 # ---------------------------------------------------------------------------
 
 
-def validate_cypher(cypher: str) -> Optional[str]:
+def validate_cypher(cypher: str) -> str | None:
     """Lightweight validation of a Cypher query string.
 
     Returns an error message if the query looks invalid, or ``None`` if it
@@ -213,7 +212,7 @@ def validate_cypher(cypher: str) -> Optional[str]:
     return None
 
 
-def extract_cypher_return_aliases(cypher: str) -> List[str]:
+def extract_cypher_return_aliases(cypher: str) -> list[str]:
     """Extract column aliases from the RETURN clause of a Cypher query.
 
     Used to auto-build the column definition list for :func:`wrap_cypher_query`.
@@ -239,7 +238,7 @@ def extract_cypher_return_aliases(cypher: str) -> List[str]:
         return ["result"]
 
     return_clause = match.group(1).strip()
-    aliases: List[str] = []
+    aliases: list[str] = []
 
     for term in return_clause.split(","):
         term = term.strip()
