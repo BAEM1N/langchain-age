@@ -1,6 +1,17 @@
 # Changelog
 
-## [0.0.6] - 2026-04-03
+## [0.1.1] - 2026-04-03
+
+Initial stable release. Public API baseline established.
+
+### Highlights
+- LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL
+- Drop-in replacement for `langchain-neo4j` — same `query()`, `similarity_search()`, `from_existing_graph()`, `GraphCypherQAChain` API
+- Three install modes: `[graph]`, `[vector]`, `[all]`
+- 118 tests (65 unit + 53 integration), ruff 0 errors, mypy 0 errors
+- Bilingual documentation (English + Korean)
+
+### Since 0.0.6
 
 ### Added
 - `traverse()` — WITH RECURSIVE deep hop traversal (10–22x faster than Cypher `*N`)

@@ -8,22 +8,34 @@ Drop-in replacement for `langchain-neo4j` — same API, runs on PostgreSQL inste
 from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
 ```
 
+> **v0.1.1 — Initial stable release.** The public API (`AGEGraph`, `AGEVector`, `AGEGraphCypherQAChain`) is considered stable. Breaking changes in 0.1.x will be avoided where possible.
+
+### Tested with
+
+- Python 3.10–3.14
+- PostgreSQL 18 + Apache AGE 1.7.0 + pgvector 0.8.2
+
+### Known limitations
+
+- AGE does not support parameterised Cypher (`$param`) — `langchain-age` provides `mogrify`-based safe value escaping as a workaround
+- The `[graph]` extra installs `apache-age-python` from GitHub (the PyPI version is outdated and psycopg2-based)
+- Async methods use `run_in_executor` wrapping (not native `psycopg.AsyncConnection` yet)
+
 ## Installation
 
 Three install modes depending on what you need:
 
 ```bash
-# Graph only (Apache AGE)
-pip install "langchain-age[graph]"
-
 # Vector only (pgvector)
 pip install "langchain-age[vector]"
 
-# Everything (Graph + Vector)
+# Graph + Vector (everything)
 pip install "langchain-age[all]"
+pip install "apache-age-python @ git+https://github.com/apache/age.git#subdirectory=drivers/python"
 ```
 
-> **Note**: The Apache AGE Python driver is installed from GitHub (the PyPI version is outdated).
+> **Note**: The Apache AGE Python driver must be installed separately from GitHub.
+> The PyPI version (0.0.7) is outdated and uses psycopg2. The GitHub version uses psycopg3.
 > This is the [official SDK](https://github.com/apache/age/tree/master/drivers/python) maintained by the Apache AGE project.
 
 ## Quick Start
