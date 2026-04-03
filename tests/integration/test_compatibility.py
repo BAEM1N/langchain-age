@@ -141,6 +141,84 @@ class TestAGEGraph:
 
 
 # ─────────────────────────────────────────────────────────────────
+# 1b. Deep traversal (WITH RECURSIVE) & property index
+# ─────────────────────────────────────────────────────────────────
+
+class TestDeepTraversal:
+    """WITH RECURSIVE 기반 deep hop 최적화 테스트"""
+
+    def test_traverse_outgoing(self, graph):
+        """traverse() — outgoing 방향 기본 탐색"""
+        # 테스트 데이터: Alice -> Bob (KNOWS)
+        results = graph.traverse(
+            start_label="Person",
+            start_filter={"name": "Alice"},
+            edge_label="KNOWS",
+            max_depth=3,
+        )
+        assert len(results) >= 1
+        assert all("depth" in r for r in results)
+        assert all("node_id" in r for r in results)
+
+    def test_traverse_returns_properties(self, graph):
+        """traverse(return_properties=True) — 노드 프로퍼티 포함"""
+        results = graph.traverse(
+            start_label="Person",
+            start_filter={"name": "Alice"},
+            edge_label="KNOWS",
+            max_depth=2,
+            return_properties=True,
+        )
+        if results:
+            assert "properties" in results[0]
+            assert isinstance(results[0]["properties"], dict)
+
+    def test_traverse_no_properties(self, graph):
+        """traverse(return_properties=False) — 프로퍼티 없이 빠른 탐색"""
+        results = graph.traverse(
+            start_label="Person",
+            start_filter={"name": "Alice"},
+            edge_label="KNOWS",
+            max_depth=2,
+            return_properties=False,
+        )
+        if results:
+            assert "properties" not in results[0]
+
+    def test_traverse_incoming(self, graph):
+        """traverse(direction='incoming') — 역방향"""
+        results = graph.traverse(
+            start_label="Person",
+            start_filter={"name": "Bob"},
+            edge_label="KNOWS",
+            max_depth=2,
+            direction="incoming",
+        )
+        # Alice -> Bob 이므로 Bob에서 incoming하면 Alice를 찾아야
+        assert len(results) >= 1
+
+    def test_traverse_both(self, graph):
+        """traverse(direction='both') — 양방향"""
+        results = graph.traverse(
+            start_label="Person",
+            start_filter={"name": "Alice"},
+            edge_label="KNOWS",
+            max_depth=2,
+            direction="both",
+        )
+        assert len(results) >= 1
+
+    def test_create_property_index_btree(self, graph):
+        """create_property_index() — B-tree 인덱스 생성"""
+        graph.create_property_index("Person", "name", index_type="btree")
+        # 에러 없으면 성공
+
+    def test_create_property_index_gin(self, graph):
+        """create_property_index() — GIN 인덱스 생성"""
+        graph.create_property_index("Person", "name", index_type="gin")
+
+
+# ─────────────────────────────────────────────────────────────────
 # 2. AGEVector — Neo4jVector / PGVectorStore 동일 인터페이스
 # ─────────────────────────────────────────────────────────────────
 
