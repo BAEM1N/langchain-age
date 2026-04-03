@@ -4,10 +4,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/langchain-age)](https://pypi.org/project/langchain-age/)
 [![CI](https://github.com/BAEM1N/langchain-age/actions/workflows/ci.yml/badge.svg)](https://github.com/BAEM1N/langchain-age/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![KR](https://img.shields.io/badge/lang-한국어-blue.svg)](README_KR.md)
 
 LangChain integration for [Apache AGE](https://age.apache.org/) (graph) + [pgvector](https://github.com/pgvector/pgvector) (vector) on PostgreSQL.
-
-[한국어 문서 (Korean)](#한국어)
 
 ## Installation
 
@@ -163,111 +162,3 @@ mypy langchain_age/
 MIT — see [LICENSE](LICENSE).
 
 The vendored Apache AGE Python driver (`langchain_age/_vendor/age/`) is licensed under Apache 2.0.
-
----
-
-<a id="한국어"></a>
-
-# langchain-age (한국어)
-
-[Apache AGE](https://age.apache.org/) (그래프) + [pgvector](https://github.com/pgvector/pgvector) (벡터)를 PostgreSQL 위에서 LangChain과 통합하는 라이브러리.
-
-`langchain-neo4j`와 동일한 API — Neo4j 대신 PostgreSQL에서 동작합니다.
-
-## 설치
-
-```bash
-pip install langchain-age            # 그래프 (AGEGraph + Cypher QA 체인)
-pip install "langchain-age[all]"     # 그래프 + 벡터 (+ AGEVector)
-```
-
-Apache AGE 드라이버가 내장되어 있어 추가 설치가 필요 없습니다.
-
-## 빠른 시작
-
-### AGEGraph
-
-```python
-from langchain_age import AGEGraph
-
-graph = AGEGraph(
-    "host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
-    graph_name="my_graph",
-)
-
-graph.query("CREATE (:Person {name: 'Alice', age: 30})")
-results = graph.query("MATCH (n:Person) RETURN n.name AS name, n.age AS age")
-# [{'name': 'Alice', 'age': 30}]
-```
-
-### AGEVector
-
-```python
-from langchain_age import AGEVector, DistanceStrategy
-from langchain_openai import OpenAIEmbeddings
-
-store = AGEVector(
-    connection_string="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
-    embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
-    collection_name="my_docs",
-    distance_strategy=DistanceStrategy.COSINE,
-)
-
-store.add_texts(["Apache AGE는 PostgreSQL에 Cypher를 추가합니다.", "pgvector는 벡터 검색을 지원합니다."])
-docs = store.similarity_search("그래프 데이터베이스", k=2)
-```
-
-### AGEGraphCypherQAChain
-
-```python
-from langchain_age import AGEGraph, AGEGraphCypherQAChain
-from langchain_openai import ChatOpenAI
-
-chain = AGEGraphCypherQAChain.from_llm(
-    ChatOpenAI(model="gpt-4o-mini"),
-    graph=AGEGraph("...", "movies"),
-    allow_dangerous_requests=True,
-)
-answer = chain.run("톰 행크스가 출연한 영화는?")
-```
-
-## 왜 Neo4j 대신 AGE인가?
-
-| | Neo4j | Apache AGE |
-|---|---|---|
-| **인프라** | 별도 데이터베이스 | **기존 PostgreSQL에 확장** |
-| **비용 (HA)** | 연 $15K+ (Enterprise) | **$0** (PG 네이티브 HA) |
-| **라이선스** | GPL / 상용 | **Apache 2.0** |
-| **벡터 검색** | Enterprise 기능 | **pgvector (무료, 같은 DB)** |
-| **LangGraph 메모리** | 별도 DB 필요 | **같은 PostgreSQL** |
-
-둘 다 Cypher를 사용합니다. `langchain-age`가 SQL 래핑을 자동 처리하므로 Neo4j와 동일한 Cypher를 작성하면 됩니다.
-
-## 데이터베이스 설정
-
-```bash
-git clone https://github.com/BAEM1N/langchain-age.git
-cd langchain-age/docker
-docker compose up -d
-```
-
-단일 컨테이너: PostgreSQL 18 + Apache AGE 1.7.0 + pgvector + pg_trgm.
-
-## 문서
-
-| 언어 | 시작 가이드 | 튜토리얼 | API 레퍼런스 |
-|------|:-:|:-:|:-:|
-| English | [Link](docs/en/getting-started.md) | [Link](docs/en/tutorial.md) | [Link](docs/en/api-reference.md) |
-| 한국어 | [Link](docs/ko/getting-started.md) | [Link](docs/ko/tutorial.md) | [Link](docs/ko/api-reference.md) |
-
-## 호환성
-
-- **Python**: 3.10, 3.11, 3.12, 3.13, 3.14
-- **PostgreSQL**: 18 + Apache AGE 1.7.0 + pgvector 0.8.2
-- **LangChain**: v1 (`langchain-core>=1.0.0`)
-
-## 라이선스
-
-MIT — [LICENSE](LICENSE) 참조.
-
-내장된 Apache AGE Python 드라이버 (`langchain_age/_vendor/age/`)는 Apache 2.0 라이선스입니다.
