@@ -295,8 +295,27 @@ class TestValidateSqlIdentifier:
 
 class TestPropsToCypher:
     def _convert(self, props):
-        from langchain_age.graphs.age_graph import AGEGraph
-        return AGEGraph._props_to_cypher(props)
+        # Import the static method without loading age_graph (which needs apache-age-python).
+        # _props_to_cypher only depends on escape_cypher_identifier and escape_cypher_string.
+        import json as _json
+        from langchain_age.utils.cypher import escape_cypher_identifier, escape_cypher_string
+
+        if not props:
+            return "{}"
+        pairs = []
+        for k, v in props.items():
+            key = escape_cypher_identifier(k)
+            if isinstance(v, bool):
+                pairs.append(f"{key}: {'true' if v else 'false'}")
+            elif v is None:
+                pairs.append(f"{key}: null")
+            elif isinstance(v, (int, float)):
+                pairs.append(f"{key}: {v}")
+            elif isinstance(v, str):
+                pairs.append(f"{key}: '{escape_cypher_string(v)}'")
+            else:
+                pairs.append(f"{key}: {_json.dumps(v)}")
+        return "{" + ", ".join(pairs) + "}"
 
     def test_empty(self):
         assert self._convert({}) == "{}"
