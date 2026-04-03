@@ -16,3 +16,4 @@ env/
 *.so
 .DS_Store
 .omx/
+blog/
