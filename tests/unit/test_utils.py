@@ -339,10 +339,6 @@ class TestLazyImport:
         from langchain_age import DistanceStrategy
         assert hasattr(DistanceStrategy, "COSINE")
 
-    def test_import_chat_history(self):
-        from langchain_age import PostgresChatMessageHistory
-        assert PostgresChatMessageHistory is not None
-
     def test_invalid_attr_raises(self):
         import langchain_age
         with pytest.raises(AttributeError, match="no attribute"):

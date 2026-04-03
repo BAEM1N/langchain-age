@@ -15,9 +15,10 @@ Supports three usage modes:
     from langchain_age import AGEGraph, AGEVector
     store = AGEVector.from_existing_graph(...)
 
-**Chat history** (plain PostgreSQL, no extensions required)::
+For long-term memory and checkpointing, use ``langgraph-checkpoint-postgres``
+which connects to the same PostgreSQL instance::
 
-    from langchain_age import PostgresChatMessageHistory
+    from langgraph.store.postgres import PostgresStore
 """
 from __future__ import annotations
 
@@ -34,9 +35,6 @@ if TYPE_CHECKING:
         AGEGraphCypherQAChain as AGEGraphCypherQAChain,
         CYPHER_GENERATION_PROMPT as CYPHER_GENERATION_PROMPT,
         QA_PROMPT as QA_PROMPT,
-    )
-    from langchain_age.chat_message_histories import (
-        PostgresChatMessageHistory as PostgresChatMessageHistory,
     )
     from langchain_age.graphs.age_graph import AGEGraph as AGEGraph
     from langchain_age.vectorstores.age_vector import (
@@ -68,9 +66,6 @@ def __getattr__(name: str):  # noqa: C901
     if name == "QA_PROMPT":
         from langchain_age.chains.graph_cypher_qa_chain import QA_PROMPT
         return QA_PROMPT
-    if name == "PostgresChatMessageHistory":
-        from langchain_age.chat_message_histories import PostgresChatMessageHistory
-        return PostgresChatMessageHistory
     raise AttributeError(f"module 'langchain_age' has no attribute {name!r}")
 
 
@@ -82,5 +77,4 @@ __all__ = [
     "SearchType",
     "CYPHER_GENERATION_PROMPT",
     "QA_PROMPT",
-    "PostgresChatMessageHistory",
 ]
