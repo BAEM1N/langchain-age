@@ -298,6 +298,7 @@ class TestPropsToCypher:
         # Import the static method without loading age_graph (which needs apache-age-python).
         # _props_to_cypher only depends on escape_cypher_identifier and escape_cypher_string.
         import json as _json
+
         from langchain_age.utils.cypher import escape_cypher_identifier, escape_cypher_string
 
         if not props:
