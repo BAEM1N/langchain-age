@@ -23,12 +23,13 @@ logger = logging.getLogger(__name__)
 
 try:
     import psycopg
-    from age import setUpAge
     from psycopg.client_cursor import ClientCursor
+
+    from langchain_age._vendor.age import setUpAge
 except ImportError as e:
     raise ImportError(
-        "apache-age-python and psycopg are required.\n"
-        "Install: pip install apache-age-python 'psycopg[binary]'"
+        "psycopg is required.\n"
+        "Install: pip install 'psycopg[binary]'"
     ) from e
 
 from langchain_community.graphs.graph_document import GraphDocument

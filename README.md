@@ -18,7 +18,6 @@ from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
 ### Known limitations
 
 - AGE does not support parameterised Cypher (`$param`) — `langchain-age` provides `mogrify`-based safe value escaping as a workaround
-- The `[graph]` extra installs `apache-age-python` from GitHub (the PyPI version is outdated and psycopg2-based)
 - Async methods use `run_in_executor` wrapping (not native `psycopg.AsyncConnection` yet)
 
 ## Installation
@@ -26,17 +25,15 @@ from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
 Three install modes depending on what you need:
 
 ```bash
-# Vector only (pgvector)
-pip install "langchain-age[vector]"
+# Graph only
+pip install langchain-age
 
 # Graph + Vector (everything)
 pip install "langchain-age[all]"
-pip install "apache-age-python @ git+https://github.com/apache/age.git#subdirectory=drivers/python"
 ```
 
-> **Note**: The Apache AGE Python driver must be installed separately from GitHub.
-> The PyPI version (0.0.7) is outdated and uses psycopg2. The GitHub version uses psycopg3.
-> This is the [official SDK](https://github.com/apache/age/tree/master/drivers/python) maintained by the Apache AGE project.
+> The Apache AGE Python driver is vendored — no separate installation required.
+> Graph features work out of the box with `pip install langchain-age`.
 
 ## Quick Start
 

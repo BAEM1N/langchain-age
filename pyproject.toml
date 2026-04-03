@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-age"
-version = "0.1.1"
+version = "0.1.2"
 description = "LangChain integration for Apache AGE (graph) + pgvector (vector) on PostgreSQL"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -23,23 +23,25 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Core dependencies: only langchain-core + psycopg3 (shared by all modes).
-# Graph-specific and Vector-specific deps are in [project.optional-dependencies].
+# Core dependencies: graph features work out of the box via vendored age SDK.
+# Vector-specific deps (pgvector, numpy) are in [project.optional-dependencies].
 dependencies = [
     "langchain-core>=1.0.0,<2.0.0",
     "langchain-community>=0.4.0",
     "langchain>=1.0.0,<2.0.0",
-    # psycopg3 — used by all modes (graph, vector, chat history)
+    # psycopg3 — used by graph and vector
     "psycopg[binary]>=3.1.0",
+    # antlr4 — required by vendored apache-age-python for agtype parsing
+    "antlr4-python3-runtime>=4.11.0",
 ]
 
 [project.optional-dependencies]
-# Vector-only: AGEVector
+# Vector: AGEVector (pgvector + numpy)
 vector = [
     "pgvector>=0.3.0",
     "numpy>=1.24",
 ]
-# Graph + Vector (vector deps included; apache-age-python must be installed separately)
+# Everything (graph is included by default, this adds vector)
 all = [
     "langchain-age[vector]",
 ]
@@ -73,6 +75,7 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = ["langchain_age/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -83,3 +86,4 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+exclude = ["langchain_age/_vendor"]

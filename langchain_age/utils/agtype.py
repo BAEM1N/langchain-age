@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 try:
-    from age import Edge, Path, Vertex
+    from langchain_age._vendor.age import Edge, Path, Vertex
 
     _AGE_SDK_AVAILABLE = True
 except ImportError:

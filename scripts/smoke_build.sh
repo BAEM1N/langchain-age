@@ -68,34 +68,10 @@ run_smoke "vector" \
     "${WHEEL_ABS}[vector]" \
     "from langchain_age import AGEVector, DistanceStrategy; print(f'  AGEVector={AGEVector}')"
 
-# graph — apache-age-python must be installed separately (not a PyPI extra)
-run_smoke_graph() {
-    local tmpdir
-    tmpdir=$(mktemp -d)
-
-    echo ""
-    echo "=== Smoke: graph ==="
-    "$PYTHON" -m venv "$tmpdir/venv"
-    "$tmpdir/venv/bin/python" -m pip install --quiet --upgrade pip
-    "$tmpdir/venv/bin/python" -m pip install --quiet "$WHEEL_ABS"
-    "$tmpdir/venv/bin/python" -m pip install --quiet \
-        "apache-age-python @ git+https://github.com/apache/age.git#subdirectory=drivers/python"
-
-    (
-        cd "$tmpdir"
-        "./venv/bin/python" -I -c "
-from langchain_age import AGEGraph; print(f'  AGEGraph={AGEGraph}')
-import langchain_age
-path = langchain_age.__file__
-assert 'site-packages' in path, f'Imported from source tree, not wheel: {path}'
-print(f'  path={path}')
-"
-    )
-    echo "  OK"
-    rm -rf "$tmpdir"
-}
-
-run_smoke_graph
+# graph (vendored age SDK — no separate install needed)
+run_smoke "graph" \
+    "$WHEEL_ABS" \
+    "from langchain_age import AGEGraph; print(f'  AGEGraph={AGEGraph}')"
 
 echo ""
 echo "=== All smoke tests passed ==="
