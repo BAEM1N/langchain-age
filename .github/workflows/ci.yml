@@ -42,9 +42,9 @@ jobs:
       - name: Build and start DB container
         run: |
           docker compose -f docker/docker-compose.yml up -d --build
-          # Wait for healthy
+          # Wait for healthy (service name: postgres-age)
           for i in $(seq 1 30); do
-            if docker compose -f docker/docker-compose.yml exec -T db pg_isready -U langchain; then
+            if docker compose -f docker/docker-compose.yml exec -T postgres-age pg_isready -U langchain; then
               break
             fi
             sleep 2

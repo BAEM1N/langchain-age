@@ -152,6 +152,13 @@ AGE graph tables, pgvector tables, and LangGraph store tables coexist in the sam
 
 `langchain-age` handles SQL wrapping automatically — you write plain Cypher.
 
+## Documentation
+
+| Language | Getting Started | Tutorial | API Reference |
+|----------|----------------|----------|---------------|
+| English  | [getting-started.md](docs/en/getting-started.md) | [tutorial.md](docs/en/tutorial.md) | [api-reference.md](docs/en/api-reference.md) |
+| Korean   | [getting-started.md](docs/ko/getting-started.md) | [tutorial.md](docs/ko/tutorial.md) | [api-reference.md](docs/ko/api-reference.md) |
+
 ## Notebooks
 
 | Notebook | Description |
