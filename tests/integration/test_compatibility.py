@@ -1,15 +1,16 @@
-"""
-langchain-age LangChain 호환성 통합 테스트
+"""Integration tests for langchain-age LangChain compatibility.
 
-Neo4j와 동일한 방식으로 사용 가능한지 검증:
+Verifies API parity with langchain-neo4j:
   from langchain_age import AGEGraph
   from langchain_age import AGEVector
   from langchain_age import AGEGraphCypherQAChain, DistanceStrategy, SearchType
 
-DB: docker/docker-compose.yml 컨테이너 필요
-DSN: LANGCHAIN_AGE_TEST_DSN 환경변수 또는 아래 기본값
+Requirements:
+  - Docker container: docker/docker-compose.yml
+  - DSN: LANGCHAIN_AGE_TEST_DSN env var or default below
 """
 import os
+
 import pytest
 
 DSN = os.getenv(
@@ -22,9 +23,11 @@ GRAPH = "test_compat_graph"
 # Fixtures
 # ─────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def graph():
     from langchain_age import AGEGraph
+
     g = AGEGraph(DSN, GRAPH, refresh_schema=False)
     yield g
     try:
@@ -36,6 +39,7 @@ def graph():
 @pytest.fixture(scope="module")
 def vector_store():
     from langchain_age import AGEVector, DistanceStrategy
+
     store = AGEVector(
         connection_string=DSN,
         embedding_function=FakeEmbeddings(),
@@ -48,48 +52,56 @@ def vector_store():
 
 
 class FakeEmbeddings:
-    """결정적 임베딩 (dim=4) – 외부 API 불필요"""
+    """Deterministic embeddings (dim=4) — no external API required."""
+
     def embed_documents(self, texts):
-        return [[float(i % 4) / 4.0 for i in range(len(t), len(t) + 4)] for t in texts]
+        return [
+            [float(i % 4) / 4.0 for i in range(len(t), len(t) + 4)] for t in texts
+        ]
 
     def embed_query(self, text):
         return [0.1, 0.5, 0.8, 0.2]
 
 
 # ─────────────────────────────────────────────────────────────────
-# 1. AGEGraph — Neo4jGraph 동일 인터페이스
+# 1. AGEGraph — Neo4jGraph compatible interface
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestAGEGraph:
-    """Neo4jGraph와 동일한 인터페이스 검증"""
+    """Verify AGEGraph matches the Neo4jGraph interface."""
 
     def test_import_style(self):
-        """from langchain_age import AGEGraph  (Neo4j 스타일)"""
+        """from langchain_age import AGEGraph (Neo4j style)."""
         from langchain_age import AGEGraph
+
         assert AGEGraph is not None
 
     def test_query_create_and_match(self, graph):
-        """graph.query() — CREATE + MATCH"""
+        """graph.query() — CREATE + MATCH."""
         graph.query("MERGE (:Person {name: 'Alice', age: 30})")
-        results = graph.query("MATCH (n:Person {name: 'Alice'}) RETURN n.name AS name, n.age AS age")
+        results = graph.query(
+            "MATCH (n:Person {name: 'Alice'}) RETURN n.name AS name, n.age AS age"
+        )
         assert len(results) >= 1
         assert results[0]["name"] == "Alice"
         assert results[0]["age"] == 30
 
     def test_query_relationship(self, graph):
-        """관계 생성 및 조회"""
+        """Create and query relationships."""
         graph.query("MERGE (:Person {name: 'Bob'})")
         graph.query(
             "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) "
             "MERGE (a)-[:KNOWS]->(b)"
         )
         results = graph.query(
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS src, b.name AS dst"
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) "
+            "RETURN a.name AS src, b.name AS dst"
         )
         assert any(r["src"] == "Alice" and r["dst"] == "Bob" for r in results)
 
     def test_refresh_schema(self, graph):
-        """graph.refresh_schema() + graph.schema 프로퍼티"""
+        """graph.refresh_schema() + graph.schema property."""
         graph.refresh_schema()
         assert isinstance(graph.schema, str)
         assert len(graph.schema) > 0
@@ -98,25 +110,35 @@ class TestAGEGraph:
         assert "relationships" in graph.structured_schema
 
     def test_get_schema_property(self, graph):
-        """graph.get_schema 프로퍼티 (Neo4j 동일)"""
+        """graph.get_schema property (same as Neo4j)."""
         schema = graph.get_schema
         assert isinstance(schema, str)
 
     def test_get_structured_schema_property(self, graph):
-        """graph.get_structured_schema 프로퍼티 (Neo4j 동일)"""
+        """graph.get_structured_schema property (same as Neo4j)."""
         ss = graph.get_structured_schema
         assert isinstance(ss, dict)
         assert "node_props" in ss
 
     def test_add_graph_documents(self, graph):
-        """graph.add_graph_documents() — LLMGraphTransformer 출력 호환"""
-        from langchain_community.graphs.graph_document import GraphDocument, Node, Relationship
+        """graph.add_graph_documents() — LLMGraphTransformer output compatible."""
+        from langchain_community.graphs.graph_document import (
+            GraphDocument,
+            Node,
+            Relationship,
+        )
         from langchain_core.documents import Document
 
-        movie = Node(id="inception", type="Movie", properties={"title": "Inception"})
-        director = Node(id="nolan", type="Director", properties={"name": "Christopher Nolan"})
+        movie = Node(
+            id="inception", type="Movie", properties={"title": "Inception"}
+        )
+        director = Node(
+            id="nolan", type="Director", properties={"name": "Christopher Nolan"}
+        )
         rel = Relationship(source=director, target=movie, type="DIRECTED")
-        source = Document(page_content="Inception by Nolan", metadata={"source": "test"})
+        source = Document(
+            page_content="Inception by Nolan", metadata={"source": "test"}
+        )
 
         graph.add_graph_documents(
             [GraphDocument(nodes=[movie, director], relationships=[rel], source=source)],
@@ -130,8 +152,9 @@ class TestAGEGraph:
         assert any(r.get("title") == "Inception" for r in results)
 
     def test_include_exclude_types(self, graph):
-        """include_types / exclude_types 필터링 (Neo4j 동일 파라미터)"""
+        """include_types / exclude_types filtering (same as Neo4j)."""
         from langchain_age import AGEGraph
+
         g2 = AGEGraph(DSN, GRAPH, refresh_schema=True, include_types=["Person"])
         assert "Person" in g2.structured_schema.get("node_props", {})
         assert "Movie" not in g2.structured_schema.get("node_props", {})
@@ -144,12 +167,13 @@ class TestAGEGraph:
 # 1b. Deep traversal (WITH RECURSIVE) & property index
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestDeepTraversal:
-    """WITH RECURSIVE 기반 deep hop 최적화 테스트"""
+    """WITH RECURSIVE based deep hop optimisation tests."""
 
     def test_traverse_outgoing(self, graph):
-        """traverse() — outgoing 방향 기본 탐색"""
-        # 테스트 데이터: Alice -> Bob (KNOWS)
+        """traverse() — default outgoing direction."""
+        # Test data: Alice -> Bob (KNOWS)
         results = graph.traverse(
             start_label="Person",
             start_filter={"name": "Alice"},
@@ -161,7 +185,7 @@ class TestDeepTraversal:
         assert all("node_id" in r for r in results)
 
     def test_traverse_returns_properties(self, graph):
-        """traverse(return_properties=True) — 노드 프로퍼티 포함"""
+        """traverse(return_properties=True) — includes node properties."""
         results = graph.traverse(
             start_label="Person",
             start_filter={"name": "Alice"},
@@ -174,7 +198,7 @@ class TestDeepTraversal:
             assert isinstance(results[0]["properties"], dict)
 
     def test_traverse_no_properties(self, graph):
-        """traverse(return_properties=False) — 프로퍼티 없이 빠른 탐색"""
+        """traverse(return_properties=False) — lightweight traversal."""
         results = graph.traverse(
             start_label="Person",
             start_filter={"name": "Alice"},
@@ -186,7 +210,7 @@ class TestDeepTraversal:
             assert "properties" not in results[0]
 
     def test_traverse_incoming(self, graph):
-        """traverse(direction='incoming') — 역방향"""
+        """traverse(direction='incoming') — reverse direction."""
         results = graph.traverse(
             start_label="Person",
             start_filter={"name": "Bob"},
@@ -194,11 +218,11 @@ class TestDeepTraversal:
             max_depth=2,
             direction="incoming",
         )
-        # Alice -> Bob 이므로 Bob에서 incoming하면 Alice를 찾아야
+        # Alice -> Bob, so incoming from Bob should find Alice
         assert len(results) >= 1
 
     def test_traverse_both(self, graph):
-        """traverse(direction='both') — 양방향"""
+        """traverse(direction='both') — bidirectional."""
         results = graph.traverse(
             start_label="Person",
             start_filter={"name": "Alice"},
@@ -209,49 +233,60 @@ class TestDeepTraversal:
         assert len(results) >= 1
 
     def test_create_property_index_btree(self, graph):
-        """create_property_index() — B-tree 인덱스 생성"""
+        """create_property_index() — B-tree index creation."""
         graph.create_property_index("Person", "name", index_type="btree")
-        # 에러 없으면 성공
 
     def test_create_property_index_gin(self, graph):
-        """create_property_index() — GIN 인덱스 생성"""
+        """create_property_index() — GIN index creation."""
         graph.create_property_index("Person", "name", index_type="gin")
 
 
 # ─────────────────────────────────────────────────────────────────
-# 2. AGEVector — Neo4jVector / PGVectorStore 동일 인터페이스
+# 2. AGEVector — Neo4jVector / PGVectorStore compatible interface
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestAGEVector:
-    """Neo4jVector와 동일한 인터페이스 검증"""
+    """Verify AGEVector matches the Neo4jVector interface."""
 
     def test_import_style(self):
-        """from langchain_age import AGEVector, DistanceStrategy, SearchType"""
+        """from langchain_age import AGEVector, DistanceStrategy, SearchType."""
         from langchain_age import AGEVector, DistanceStrategy, SearchType
+
         assert AGEVector is not None
         assert DistanceStrategy.COSINE is not None
         assert SearchType.HYBRID is not None
 
     def test_add_documents(self, vector_store):
-        """add_documents() + 반환 ID 리스트"""
+        """add_documents() + returned ID list."""
         from langchain_core.documents import Document
+
         docs = [
-            Document(page_content="Apache AGE is a graph extension for PostgreSQL.", metadata={"source": "a"}),
-            Document(page_content="pgvector enables vector similarity search.", metadata={"source": "b"}),
-            Document(page_content="LangChain connects LLMs to tools and data.", metadata={"source": "c"}),
+            Document(
+                page_content="Apache AGE is a graph extension for PostgreSQL.",
+                metadata={"source": "a"},
+            ),
+            Document(
+                page_content="pgvector enables vector similarity search.",
+                metadata={"source": "b"},
+            ),
+            Document(
+                page_content="LangChain connects LLMs to tools and data.",
+                metadata={"source": "c"},
+            ),
         ]
         ids = vector_store.add_documents(docs)
         assert len(ids) == 3
         assert all(isinstance(i, str) for i in ids)
 
     def test_similarity_search(self, vector_store):
-        """similarity_search(query, k) — 기본 인터페이스"""
+        """similarity_search(query, k) — basic interface."""
         results = vector_store.similarity_search("graph database", k=2)
         assert len(results) <= 2
         assert all(hasattr(r, "page_content") for r in results)
 
     def test_similarity_search_with_score(self, vector_store):
-        """similarity_search_with_score() — (Document, float) 튜플"""
+        """similarity_search_with_score() — (Document, float) tuples."""
         results = vector_store.similarity_search_with_score("vector search", k=2)
         assert len(results) <= 2
         for doc, score in results:
@@ -259,13 +294,13 @@ class TestAGEVector:
             assert isinstance(score, float)
 
     def test_similarity_search_by_vector(self, vector_store):
-        """similarity_search_by_vector() — 임베딩 직접 전달"""
+        """similarity_search_by_vector() — raw embedding input."""
         embedding = [0.1, 0.5, 0.8, 0.2]
         results = vector_store.similarity_search_by_vector(embedding, k=2)
         assert len(results) <= 2
 
     def test_add_texts(self, vector_store):
-        """add_texts() 인터페이스"""
+        """add_texts() interface."""
         ids = vector_store.add_texts(
             ["Graph RAG combines graphs and vectors.", "OpenCypher runs on AGE."],
             metadatas=[{"tag": "rag"}, {"tag": "cypher"}],
@@ -273,13 +308,15 @@ class TestAGEVector:
         assert len(ids) == 2
 
     def test_metadata_filter_equality(self, vector_store):
-        """단순 equality 메타데이터 필터"""
-        results = vector_store.similarity_search("search", k=10, filter={"source": "a"})
+        """Simple equality metadata filter."""
+        results = vector_store.similarity_search(
+            "search", k=10, filter={"source": "a"}
+        )
         for doc in results:
             assert doc.metadata.get("source") == "a"
 
     def test_metadata_filter_operators(self, vector_store):
-        """$in, $like 등 고급 필터 연산자"""
+        """$in, $like and other advanced filter operators."""
         results = vector_store.similarity_search(
             "search", k=10, filter={"source": {"$in": ["a", "b"]}}
         )
@@ -287,28 +324,29 @@ class TestAGEVector:
             assert doc.metadata.get("source") in ("a", "b")
 
     def test_delete(self, vector_store):
-        """delete(ids) 인터페이스"""
+        """delete(ids) interface."""
         ids = vector_store.add_texts(["delete me"])
         result = vector_store.delete(ids)
         assert result is True
 
     def test_get_by_ids(self, vector_store):
-        """get_by_ids() 인터페이스"""
+        """get_by_ids() interface."""
         ids = vector_store.add_texts(["fetch by id test"])
         docs = vector_store.get_by_ids(ids)
         assert len(docs) == 1
         assert docs[0].page_content == "fetch by id test"
 
     def test_as_retriever(self, vector_store):
-        """as_retriever() — LangChain Retriever 변환 (VectorStore 상속)"""
+        """as_retriever() — LangChain Retriever conversion (VectorStore base)."""
         retriever = vector_store.as_retriever(search_kwargs={"k": 2})
         assert retriever is not None
         results = retriever.invoke("graph database")
         assert isinstance(results, list)
 
     def test_from_texts_classmethod(self):
-        """from_texts() 클래스 메서드"""
+        """from_texts() class method."""
         from langchain_age import AGEVector
+
         store = AGEVector.from_texts(
             texts=["hello world", "foo bar"],
             embedding=FakeEmbeddings(),
@@ -321,8 +359,9 @@ class TestAGEVector:
         store._drop_table()
 
     def test_from_existing_index_classmethod(self):
-        """from_existing_index() — 기존 테이블 재연결"""
+        """from_existing_index() — reconnect to existing table."""
         from langchain_age import AGEVector
+
         store = AGEVector.from_existing_index(
             embedding=FakeEmbeddings(),
             connection_string=DSN,
@@ -331,8 +370,9 @@ class TestAGEVector:
         assert store is not None
 
     def test_hybrid_search(self):
-        """hybrid search (SearchType.HYBRID) — vector + full-text RRF"""
+        """Hybrid search (SearchType.HYBRID) — vector + full-text RRF."""
         from langchain_age import AGEVector, SearchType
+
         store = AGEVector(
             connection_string=DSN,
             embedding_function=FakeEmbeddings(),
@@ -350,7 +390,7 @@ class TestAGEVector:
         store._drop_table()
 
     def test_hnsw_index_creation(self, vector_store):
-        """HNSW 인덱스 생성 인터페이스"""
+        """HNSW index creation interface."""
         vector_store.create_hnsw_index(m=8, ef_construction=32)
 
 
@@ -358,15 +398,18 @@ class TestAGEVector:
 # 3. from_existing_graph
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestFromExistingGraph:
-    """Neo4jVector.from_existing_graph() 동일 패턴"""
+    """Neo4jVector.from_existing_graph() equivalent pattern."""
 
     def test_from_existing_graph(self, graph):
         from langchain_age import AGEVector
-        # 먼저 그래프 노드 확인 (TestAGEGraph에서 생성된 것 활용)
-        # "desc" is a Cypher reserved keyword — backtick quoting in from_existing_graph handles it.
+
+        # "desc" is a Cypher reserved keyword — backtick quoting handles it.
         graph.query("MERGE (:Product {name: 'LangChain', desc: 'LLM framework'})")
-        graph.query("MERGE (:Product {name: 'pgvector', desc: 'Vector search extension'})")
+        graph.query(
+            "MERGE (:Product {name: 'pgvector', desc: 'Vector search extension'})"
+        )
 
         store = AGEVector.from_existing_graph(
             embedding=FakeEmbeddings(),
@@ -382,21 +425,19 @@ class TestFromExistingGraph:
 
 
 # ─────────────────────────────────────────────────────────────────
-# 4. AGEGraphCypherQAChain — GraphCypherQAChain 동일 인터페이스
+# 4. AGEGraphCypherQAChain — GraphCypherQAChain compatible interface
 # ─────────────────────────────────────────────────────────────────
 
-class FakeLLM:
-    """LLM 없이 체인 파이프라인 구조만 검증하는 더미.
 
-    LangChain의 Runnable pipe ( | ) 는 실제 RunnableSequence를 만드므로
-    __or__을 오버라이드하지 않고, ChatPromptTemplate | FakeLLM() 형태로
-    쓰려면 LangChain의 Runnable 프로토콜을 따라야 합니다.
-    여기서는 직접 chain을 구성하지 않고 invoke만 검증합니다.
+class FakeLLM:
+    """Dummy LLM for pipeline structure verification without API calls.
+
+    Returns hardcoded Cypher or QA answers based on input type,
+    allowing chain structure tests without an actual LLM.
     """
+
     def invoke(self, input, config=None, **kwargs):
-        # 프롬프트 메시지 목록이 들어오면 → Cypher 반환
         if isinstance(input, list):
-            # 스키마가 포함된 system message → Cypher generation 단계
             content = str(input)
             if "schema" in content.lower() or "cypher" in content.lower():
                 return "MATCH (n:Person) RETURN n.name AS name LIMIT 3"
@@ -409,25 +450,28 @@ class FakeLLM:
 
 
 class TestAGEGraphCypherQAChain:
-    """GraphCypherQAChain 동일 인터페이스 검증"""
+    """Verify AGEGraphCypherQAChain matches the GraphCypherQAChain interface."""
 
     def test_import_style(self):
-        """from langchain_age import AGEGraphCypherQAChain"""
+        """from langchain_age import AGEGraphCypherQAChain."""
         from langchain_age import AGEGraphCypherQAChain
+
         assert AGEGraphCypherQAChain is not None
 
     def test_dangerous_request_gate(self, graph):
-        """allow_dangerous_requests=False → ValueError (Neo4j 동일)"""
+        """allow_dangerous_requests=False raises ValueError (same as Neo4j)."""
         from langchain_age import AGEGraphCypherQAChain
+
         with pytest.raises(ValueError, match="allow_dangerous_requests"):
             AGEGraphCypherQAChain.from_llm(
                 FakeLLM(), graph=graph, allow_dangerous_requests=False
             )
 
     def _make_chain(self, graph, **kwargs):
-        """RunnableLambda로 fake chain 구성 (LangChain v1 Pydantic 검증 통과)"""
-        from langchain_age import AGEGraphCypherQAChain
+        """Build a fake chain using RunnableLambda (passes LangChain v1 Pydantic validation)."""
         from langchain_core.runnables import RunnableLambda
+
+        from langchain_age import AGEGraphCypherQAChain
 
         cypher_chain = RunnableLambda(
             lambda _: "MATCH (n:Person) RETURN n.name AS name LIMIT 3"
@@ -444,7 +488,7 @@ class TestAGEGraphCypherQAChain:
         )
 
     def test_chain_invoke(self, graph):
-        """chain.invoke({'query': ...}) — 기본 실행 흐름"""
+        """chain.invoke({'query': ...}) — basic execution flow."""
         graph.refresh_schema()
         chain = self._make_chain(graph)
         result = chain.invoke({"query": "Who are the people?"})
@@ -452,13 +496,13 @@ class TestAGEGraphCypherQAChain:
         assert isinstance(result["result"], str)
 
     def test_chain_run(self, graph):
-        """chain.run(query) — 단일 문자열 인터페이스 (Neo4j 동일)"""
+        """chain.run(query) — single-string interface (same as Neo4j)."""
         chain = self._make_chain(graph)
         result = chain.run("List all people")
         assert isinstance(result, str)
 
     def test_return_intermediate_steps(self, graph):
-        """return_intermediate_steps=True → Cypher + context 포함"""
+        """return_intermediate_steps=True — includes Cypher + context."""
         chain = self._make_chain(graph, return_intermediate_steps=True)
         result = chain.invoke({"query": "Find people"})
         assert "intermediate_steps" in result
@@ -466,14 +510,18 @@ class TestAGEGraphCypherQAChain:
         assert any("query" in s for s in steps)
 
     def test_include_exclude_types_in_chain(self, graph):
-        """include_types / exclude_types — 체인 레벨 스키마 필터"""
+        """include_types / exclude_types — chain-level schema filter."""
         chain = self._make_chain(graph, include_types=["Person"])
         result = chain.invoke({"query": "Find people"})
         assert "result" in result
 
     def test_custom_prompts(self, graph):
-        """cypher_prompt / qa_prompt 커스터마이징 (Neo4j 동일 파라미터)"""
-        from langchain_age import AGEGraphCypherQAChain, CYPHER_GENERATION_PROMPT, QA_PROMPT
+        """cypher_prompt / qa_prompt customisation (same params as Neo4j)."""
+        from langchain_age import (
+            CYPHER_GENERATION_PROMPT,
+            QA_PROMPT,
+        )
+
         assert CYPHER_GENERATION_PROMPT is not None
         assert QA_PROMPT is not None
         chain = self._make_chain(graph)
@@ -481,28 +529,30 @@ class TestAGEGraphCypherQAChain:
 
 
 # ─────────────────────────────────────────────────────────────────
-# 5. 추가 VectorStore 메서드 (v0.5.0)
+# 5. Extended VectorStore methods
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestVectorStoreExtended:
-    """v0.5.0에서 추가된 VectorStore 메서드 검증"""
+    """Verify VectorStore methods added for interface completeness."""
 
     def test_embeddings_property(self, vector_store):
-        """embeddings property — LangChain VectorStore 표준"""
+        """embeddings property — LangChain VectorStore standard."""
         emb = vector_store.embeddings
         assert emb is vector_store.embedding_function
 
     def test_similarity_search_with_relevance_scores(self, vector_store):
-        """similarity_search_with_relevance_scores — 0~1 정규화"""
+        """similarity_search_with_relevance_scores — normalised to [0, 1]."""
         vector_store.add_texts(["dog walks", "cat naps"], metadatas=[{}, {}])
         results = vector_store.similarity_search_with_relevance_scores("dog", k=2)
         assert len(results) >= 1
-        for doc, score in results:
+        for _doc, score in results:
             assert isinstance(score, float)
 
     def test_context_manager(self):
-        """with AGEVector(...) as store: — context manager"""
-        from langchain_age import AGEVector, DistanceStrategy
+        """with AGEVector(...) as store: — context manager."""
+        from langchain_age import AGEVector
+
         with AGEVector(
             connection_string=DSN,
             embedding_function=FakeEmbeddings(),
@@ -512,6 +562,5 @@ class TestVectorStoreExtended:
             store.add_texts(["context manager test"])
             results = store.similarity_search("context", k=1)
             assert len(results) >= 1
-        # after __exit__, connection is closed
+        # After __exit__, connection is closed
         assert store._conn.closed
-
