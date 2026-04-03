@@ -1,52 +1,26 @@
 # langchain-age
 
-**LangChain integration for [Apache AGE](https://age.apache.org/) (graph) + [pgvector](https://github.com/pgvector/pgvector) (vector) on PostgreSQL.**
+[![PyPI](https://img.shields.io/pypi/v/langchain-age)](https://pypi.org/project/langchain-age/)
+[![Python](https://img.shields.io/pypi/pyversions/langchain-age)](https://pypi.org/project/langchain-age/)
+[![CI](https://github.com/BAEM1N/langchain-age/actions/workflows/ci.yml/badge.svg)](https://github.com/BAEM1N/langchain-age/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Drop-in replacement for `langchain-neo4j` — same API, runs on PostgreSQL instead of Neo4j.
+LangChain integration for [Apache AGE](https://age.apache.org/) (graph) + [pgvector](https://github.com/pgvector/pgvector) (vector) on PostgreSQL.
 
-```python
-from langchain_age import AGEGraph, AGEVector, AGEGraphCypherQAChain
-```
-
-> **v0.1.1 — Initial stable release.** The public API (`AGEGraph`, `AGEVector`, `AGEGraphCypherQAChain`) is considered stable. Breaking changes in 0.1.x will be avoided where possible.
-
-### Tested with
-
-- Python 3.10–3.14
-- PostgreSQL 18 + Apache AGE 1.7.0 + pgvector 0.8.2
-
-### Known limitations
-
-- AGE does not support parameterised Cypher (`$param`) — `langchain-age` provides `mogrify`-based safe value escaping as a workaround
-- Async methods use `run_in_executor` wrapping (not native `psycopg.AsyncConnection` yet)
+[한국어 문서 (Korean)](#한국어)
 
 ## Installation
 
-Three install modes depending on what you need:
-
 ```bash
-# Graph only
-pip install langchain-age
-
-# Graph + Vector (everything)
-pip install "langchain-age[all]"
+pip install langchain-age            # Graph (AGEGraph + Cypher QA chain)
+pip install "langchain-age[all]"     # Graph + Vector (+ AGEVector with pgvector)
 ```
 
-> The Apache AGE Python driver is vendored — no separate installation required.
-> Graph features work out of the box with `pip install langchain-age`.
+Everything works out of the box — the Apache AGE driver is vendored, no extra steps needed.
 
 ## Quick Start
 
-### 1. Start the database
-
-```bash
-cd docker
-docker compose up -d
-```
-
-Single container: PostgreSQL 18 + Apache AGE 1.7.0 + pgvector.
-
-### 2. Graph mode
+### AGEGraph
 
 ```python
 from langchain_age import AGEGraph
@@ -57,40 +31,28 @@ graph = AGEGraph(
 )
 
 graph.query("CREATE (:Person {name: 'Alice', age: 30})")
-results = graph.query("MATCH (n:Person) RETURN n.name AS name")
-# [{'name': 'Alice'}]
+results = graph.query("MATCH (n:Person) RETURN n.name AS name, n.age AS age")
+# [{'name': 'Alice', 'age': 30}]
 ```
 
-### 3. Vector mode
+### AGEVector
 
 ```python
 from langchain_age import AGEVector, DistanceStrategy
+from langchain_openai import OpenAIEmbeddings
 
 store = AGEVector(
     connection_string="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
-    embedding_function=my_embeddings,
-    collection_name="docs",
+    embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
+    collection_name="my_docs",
     distance_strategy=DistanceStrategy.COSINE,
 )
 
-store.add_texts(["Apache AGE adds Cypher to PostgreSQL."])
-results = store.similarity_search("graph database", k=5)
+store.add_texts(["Apache AGE adds Cypher to PostgreSQL.", "pgvector enables vector search."])
+docs = store.similarity_search("graph database", k=2)
 ```
 
-### 4. Graph + Vector (GraphRAG)
-
-```python
-# Vectorise existing graph nodes
-store = AGEVector.from_existing_graph(
-    embedding=my_embeddings,
-    connection_string="...",
-    graph_name="my_graph",
-    node_label="Document",
-    text_node_properties=["title", "content"],
-)
-```
-
-### 5. Cypher QA Chain
+### AGEGraphCypherQAChain
 
 ```python
 from langchain_age import AGEGraph, AGEGraphCypherQAChain
@@ -104,124 +66,208 @@ chain = AGEGraphCypherQAChain.from_llm(
 answer = chain.run("Which movies did Tom Hanks act in?")
 ```
 
-### 6. Long-term Memory & Checkpointing
-
-Uses the same PostgreSQL instance via [langgraph-checkpoint-postgres](https://langchain-ai.github.io/langgraph/reference/checkpoints/#langgraph.checkpoint.postgres.PostgresSaver):
+### Graph + Vector (GraphRAG)
 
 ```python
-from langgraph.store.postgres import PostgresStore
-
-with PostgresStore.from_conn_string("host=localhost port=5433 ...") as store:
-    store.setup()
-    store.put(("users", "123"), "prefs", {"theme": "dark"})
+store = AGEVector.from_existing_graph(
+    embedding=OpenAIEmbeddings(),
+    connection_string="...",
+    graph_name="my_graph",
+    node_label="Document",
+    text_node_properties=["title", "content"],
+)
+docs = store.similarity_search("machine learning", k=3)
 ```
-
-AGE graph tables, pgvector tables, and LangGraph store tables coexist in the same database.
 
 ## Features
 
 | Component | Class | Description |
 |-----------|-------|-------------|
-| **Graph** | `AGEGraph` | GraphStore backed by Apache AGE. Cypher execution, schema introspection, GraphDocument upserts. |
-| **Vector** | `AGEVector` | VectorStore backed by pgvector. Cosine/L2/IP distance, HNSW & IVFFlat indexes, hybrid search (vector + full-text via RRF), MMR. |
-| **Chain** | `AGEGraphCypherQAChain` | LLM generates Cypher, executes against AGE, returns natural-language answer. |
+| **Graph** | `AGEGraph` | Cypher execution, schema introspection, `add_graph_documents()`, `traverse()` (WITH RECURSIVE, 10–22x faster than Cypher `*N`), property indexing |
+| **Vector** | `AGEVector` | Cosine/L2/IP similarity, HNSW & IVFFlat indexes, hybrid search (vector + full-text via RRF), MMR, metadata filters (`$eq`, `$in`, `$between`, `$like`, `$and`, `$or`, ...) |
+| **Chain** | `AGEGraphCypherQAChain` | LLM generates Cypher → AGE executes → LLM answers. Schema filtering, Cypher validation, function response mode |
 
-### Security
-
-- SQL identifier validation at construction (`validate_sql_identifier`)
-- Cypher identifier backtick-quoting for all 25 AGE reserved words (`escape_cypher_identifier`)
-- OpenCypher-standard string escaping with `''` doubling (`escape_cypher_string`)
-- `allow_dangerous_requests` gate on the QA chain
-- Double-quoted SQL table/index names throughout
-
-### langchain-neo4j API Compatibility
-
-| Feature | langchain-neo4j | langchain-age |
-|---------|----------------|---------------|
-| `from_existing_graph()` | `Neo4jVector.from_existing_graph()` | `AGEVector.from_existing_graph()` |
-| `from_existing_index()` | `Neo4jVector.from_existing_index()` | `AGEVector.from_existing_index()` |
-| `similarity_search_with_relevance_scores()` | Yes | Yes |
-| `as_retriever()` | Yes | Yes |
-| Hybrid search | Lucene full-text | PostgreSQL tsvector + RRF |
-| `include_types` / `exclude_types` | Yes | Yes |
-| `add_graph_documents()` | Yes | Yes |
-| Context manager | Yes | Yes |
-| Batch insert | `UNWIND ... IN TRANSACTIONS OF 1000 ROWS` | `executemany` with `batch_size=1000` |
-
-## AGE vs Neo4j
+## Why AGE over Neo4j?
 
 | | Neo4j | Apache AGE |
 |---|---|---|
-| Cypher execution | Bolt protocol | SQL-wrapped: `SELECT * FROM cypher(...)` |
-| Connection | `neo4j://` | PostgreSQL DSN |
-| Vector search | Native index | pgvector extension |
-| APOC | Available | Not available |
-| Data types | Native graph | `agtype` (JSON superset) |
-| Parameterised Cypher | Yes (`$param`) | mogrify-based (`%s` placeholders) |
+| **Infrastructure** | Separate database | **Extension on your existing PostgreSQL** |
+| **Cost (HA)** | $15K+/year (Enterprise) | **$0** (PostgreSQL native HA) |
+| **License** | GPL / Commercial | **Apache 2.0** |
+| **Vector search** | Enterprise feature | **pgvector (free, same DB)** |
+| **LangGraph memory** | Separate DB | **Same PostgreSQL** |
+| **Ops team** | Graph DB expertise needed | **Your existing PG DBA** |
 
-`langchain-age` handles SQL wrapping automatically — you write plain Cypher.
+Both use Cypher. `langchain-age` wraps the SQL automatically — you write the same Cypher as Neo4j.
+
+## Database Setup
+
+```bash
+git clone https://github.com/BAEM1N/langchain-age.git
+cd langchain-age/docker
+docker compose up -d
+```
+
+Single container: PostgreSQL 18 + Apache AGE 1.7.0 + pgvector + pg_trgm.
 
 ## Documentation
 
 | Language | Getting Started | Tutorial | API Reference |
-|----------|----------------|----------|---------------|
-| English  | [getting-started.md](docs/en/getting-started.md) | [tutorial.md](docs/en/tutorial.md) | [api-reference.md](docs/en/api-reference.md) |
-| Korean   | [getting-started.md](docs/ko/getting-started.md) | [tutorial.md](docs/ko/tutorial.md) | [api-reference.md](docs/ko/api-reference.md) |
+|----------|:-:|:-:|:-:|
+| English | [Link](docs/en/getting-started.md) | [Link](docs/en/tutorial.md) | [Link](docs/en/api-reference.md) |
+| Korean | [Link](docs/ko/getting-started.md) | [Link](docs/ko/tutorial.md) | [Link](docs/ko/api-reference.md) |
 
-## Notebooks
+### Notebooks
 
 | Notebook | Description |
 |----------|-------------|
-| [01_graph.ipynb](notebooks/01_graph.ipynb) | AGEGraph: Cypher CRUD, schema, GraphDocument |
-| [02_vector.ipynb](notebooks/02_vector.ipynb) | AGEVector: similarity, hybrid, MMR, filters, HNSW |
-| [03_graph_vector.ipynb](notebooks/03_graph_vector.ipynb) | GraphRAG: from_existing_graph, QA chain |
-
-01 requires no API key. 02–03 use OpenAI via `getpass`.
+| [01_graph.ipynb](notebooks/01_graph.ipynb) | Cypher CRUD, schema, GraphDocument (no API key needed) |
+| [02_vector.ipynb](notebooks/02_vector.ipynb) | Similarity, hybrid, MMR, filters, HNSW (OpenAI) |
+| [03_graph_vector.ipynb](notebooks/03_graph_vector.ipynb) | GraphRAG, QA chain (OpenAI) |
 
 ## Running Tests
 
 ```bash
-# Unit tests (no DB required) — 65 tests
-pytest tests/unit/
+pytest tests/unit/                # 65 tests, no DB required
 
-# Integration tests (requires Docker container) — 53 tests
 export LANGCHAIN_AGE_TEST_DSN="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain"
-pytest tests/integration/
+pytest tests/integration/         # 53 tests, requires Docker
 ```
 
-## Project Structure
+## Compatibility
 
+- **Python**: 3.10, 3.11, 3.12, 3.13, 3.14
+- **PostgreSQL**: 18 + Apache AGE 1.7.0 + pgvector 0.8.2
+- **LangChain**: v1 (`langchain-core>=1.0.0`)
+
+### Known Limitations
+
+- AGE does not support parameterised Cypher (`$param`) — `mogrify`-based escaping is provided
+- Async methods use `run_in_executor` (not native `psycopg.AsyncConnection` yet)
+
+## Contributing
+
+Contributions welcome. Please open an issue first for major changes.
+
+```bash
+git clone https://github.com/BAEM1N/langchain-age.git
+cd langchain-age
+pip install -e ".[dev]"
+pytest tests/unit/
+ruff check langchain_age/ tests/
+mypy langchain_age/
 ```
-langchain-age/
-├── docker/                          # PG18 + AGE + pgvector container
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── init/01_init_extensions.sql
-├── langchain_age/
-│   ├── __init__.py                  # Lazy imports (3-mode support)
-│   ├── graphs/
-│   │   └── age_graph.py             # AGEGraph (GraphStore)
-│   ├── vectorstores/
-│   │   └── age_vector.py            # AGEVector (VectorStore)
-│   ├── chains/
-│   │   └── graph_cypher_qa_chain.py # AGEGraphCypherQAChain
-│   └── utils/
-│       ├── agtype.py                # Vertex/Edge/Path → dict conversion
-│       └── cypher.py                # SQL wrapping, escaping, validation
-├── tests/
-│   ├── conftest.py                  # Auto-skip integration when DSN unset
-│   ├── unit/                        # 65 tests, no DB
-│   └── integration/                 # 53 tests, live DB
-├── pyproject.toml
-├── LICENSE                          # MIT
-├── CHANGELOG.md                     # Version history
-└── .github/workflows/ci.yml        # Lint + unit (3.10–3.13) + integration
-```
-
-## Python Support
-
-Tested on Python 3.10, 3.11, 3.12, 3.13, 3.14.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+The vendored Apache AGE Python driver (`langchain_age/_vendor/age/`) is licensed under Apache 2.0.
+
+---
+
+<a id="한국어"></a>
+
+# langchain-age (한국어)
+
+[Apache AGE](https://age.apache.org/) (그래프) + [pgvector](https://github.com/pgvector/pgvector) (벡터)를 PostgreSQL 위에서 LangChain과 통합하는 라이브러리.
+
+`langchain-neo4j`와 동일한 API — Neo4j 대신 PostgreSQL에서 동작합니다.
+
+## 설치
+
+```bash
+pip install langchain-age            # 그래프 (AGEGraph + Cypher QA 체인)
+pip install "langchain-age[all]"     # 그래프 + 벡터 (+ AGEVector)
+```
+
+Apache AGE 드라이버가 내장되어 있어 추가 설치가 필요 없습니다.
+
+## 빠른 시작
+
+### AGEGraph
+
+```python
+from langchain_age import AGEGraph
+
+graph = AGEGraph(
+    "host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
+    graph_name="my_graph",
+)
+
+graph.query("CREATE (:Person {name: 'Alice', age: 30})")
+results = graph.query("MATCH (n:Person) RETURN n.name AS name, n.age AS age")
+# [{'name': 'Alice', 'age': 30}]
+```
+
+### AGEVector
+
+```python
+from langchain_age import AGEVector, DistanceStrategy
+from langchain_openai import OpenAIEmbeddings
+
+store = AGEVector(
+    connection_string="host=localhost port=5433 dbname=langchain_age user=langchain password=langchain",
+    embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
+    collection_name="my_docs",
+    distance_strategy=DistanceStrategy.COSINE,
+)
+
+store.add_texts(["Apache AGE는 PostgreSQL에 Cypher를 추가합니다.", "pgvector는 벡터 검색을 지원합니다."])
+docs = store.similarity_search("그래프 데이터베이스", k=2)
+```
+
+### AGEGraphCypherQAChain
+
+```python
+from langchain_age import AGEGraph, AGEGraphCypherQAChain
+from langchain_openai import ChatOpenAI
+
+chain = AGEGraphCypherQAChain.from_llm(
+    ChatOpenAI(model="gpt-4o-mini"),
+    graph=AGEGraph("...", "movies"),
+    allow_dangerous_requests=True,
+)
+answer = chain.run("톰 행크스가 출연한 영화는?")
+```
+
+## 왜 Neo4j 대신 AGE인가?
+
+| | Neo4j | Apache AGE |
+|---|---|---|
+| **인프라** | 별도 데이터베이스 | **기존 PostgreSQL에 확장** |
+| **비용 (HA)** | 연 $15K+ (Enterprise) | **$0** (PG 네이티브 HA) |
+| **라이선스** | GPL / 상용 | **Apache 2.0** |
+| **벡터 검색** | Enterprise 기능 | **pgvector (무료, 같은 DB)** |
+| **LangGraph 메모리** | 별도 DB 필요 | **같은 PostgreSQL** |
+
+둘 다 Cypher를 사용합니다. `langchain-age`가 SQL 래핑을 자동 처리하므로 Neo4j와 동일한 Cypher를 작성하면 됩니다.
+
+## 데이터베이스 설정
+
+```bash
+git clone https://github.com/BAEM1N/langchain-age.git
+cd langchain-age/docker
+docker compose up -d
+```
+
+단일 컨테이너: PostgreSQL 18 + Apache AGE 1.7.0 + pgvector + pg_trgm.
+
+## 문서
+
+| 언어 | 시작 가이드 | 튜토리얼 | API 레퍼런스 |
+|------|:-:|:-:|:-:|
+| English | [Link](docs/en/getting-started.md) | [Link](docs/en/tutorial.md) | [Link](docs/en/api-reference.md) |
+| 한국어 | [Link](docs/ko/getting-started.md) | [Link](docs/ko/tutorial.md) | [Link](docs/ko/api-reference.md) |
+
+## 호환성
+
+- **Python**: 3.10, 3.11, 3.12, 3.13, 3.14
+- **PostgreSQL**: 18 + Apache AGE 1.7.0 + pgvector 0.8.2
+- **LangChain**: v1 (`langchain-core>=1.0.0`)
+
+## 라이선스
+
+MIT — [LICENSE](LICENSE) 참조.
+
+내장된 Apache AGE Python 드라이버 (`langchain_age/_vendor/age/`)는 Apache 2.0 라이선스입니다.
